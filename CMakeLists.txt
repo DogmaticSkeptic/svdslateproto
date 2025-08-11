@@ -37,12 +37,6 @@ foreach(path_var IN ITEMS SLATE_LIB LAPACKPP_LIB BLASPP_LIB)
     endif()
 endforeach()
 
-target_link_options(svd_slate PRIVATE
-    -Wl,--no-as-needed
-    -Wl,-rpath,${SLATE_PREFIX}/lib64
-    -Wl,-rpath,${LAPACKPP_PREFIX}/lib64
-    -Wl,-rpath,${BLASPP_PREFIX}/lib64)
-
 # Add include directories
 include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
 
@@ -60,3 +54,9 @@ target_link_libraries(svd_slate
     OpenMP::OpenMP_CXX
 )
 
+target_link_options(svd_slate PRIVATE
+    -Wl,--no-as-needed
+    -Wl,-rpath,${SLATE_PREFIX}/lib64
+    -Wl,-rpath,${LAPACKPP_PREFIX}/lib64
+    -Wl,-rpath,${BLASPP_PREFIX}/lib64
+)
