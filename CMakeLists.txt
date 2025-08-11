@@ -8,40 +8,21 @@ if (NOT CMAKE_CXX_COMPILER MATCHES "CC$")
     message(FATAL_ERROR "Use: cmake -DCMAKE_CXX_COMPILER-CC ..")
 endif()
 
-# Find SLATE
-find_path(SLATAE_INCLUDE_DIR slate/slate.hh)
-find_library(SLATE_LIBRARY slate)
-
-find_path(LAPACKPP_INCLUDE_DIR lapack.hh)
-find_library(LAPACKPP_LIBRARY lapackpp)
-
-find_path(BLASPP_INCLUDE_DIR lapack.hh)
-find_library(BLASPP_LIBRARY blasspp)
-
-if (NOT SLATE_INCLUDE_DIR OR NOT SLATE_LIBRARY)
-    message(FATAL_ERROR "SLATE not found. Did you 'spack load slate'?")
-endif()
-
-if (NOT LAPACKPP_INCLUDE_DIR OR NOT LAPACKPP_LIBRARY)
-    message(FATAL_ERROR "LAPACK++ not found. Did you 'spack load lapackpp'?")
-endif()
-
-if (NOT BLASPP_INCLUDE_DIR OR NOT BLASPP_LIBRARY)
-    message(FATAL_ERROR "BLAS++ not found. Did you 'spack load blaspp'?")
-endif()
+set(SLATE_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/slate-2023.11.05-x4dznn44tjb5l3tpl7s7uuogu3o5qfdz)
+set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-bj7fxvgxz7uw6gi2mhy7ogkewxyer73x)
+set(BLASPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-uffk4lufpj5ne7itkn27wcqcmj42zi5u)
 
 include_directories(
-    ${SLATE_INCLUDEDIR}
-    ${LAPACKPP_INCLUDE_DIR}
-    ${BLASPP_INCLUDE_DIR}
+    ${SLATE_PREFIX}/include
+    ${LAPACKPP_PREFIX}/include
+    ${BLASPP_PREFIX}/include
 )
+
+link_directories(
+    ${SLATE_PREFIX}/lib64 ${SLATE_PREFIX}/lib
+    ${LAPACKPP_PREFIX}/lib64 ${LAPACKPP_PREFIX}/lib
+    ${BLASPP_PREFX}/lib64 ${BLASPP_PREFIX}/lib
 
 add_executable(svd_slate svd_slate.cpp)
 
-target_link_libraries(svd_slate
-    ${SLATE_LIBRARY}
-    ${LAPACKPP_LIBRARY}
-    ${BLASPP_LIBRARY}
-)
-
-
+target_link_libraries(svd_slate slate lapackpp blaspp)
