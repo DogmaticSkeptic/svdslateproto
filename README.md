@@ -17,7 +17,7 @@ spack load slate lapackpp blaspp
 mkdir build
 cd build
 
-cmake -DCMAKE_CXX_COMPILER=CC ../source
+cmake -DCMAKE_CXX_COMPILER=CC ..
 make -j
 ```
 

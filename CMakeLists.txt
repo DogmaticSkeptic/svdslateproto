@@ -10,9 +10,9 @@ if (NOT CMAKE_CXX_COMPILER MATCHES "CC$")
 endif()
 
 # Hardcoded Spack install prefixes for Perlmutter E4S v0.22
-set(SLATE_PREFIX    /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/slate-2023.11.05-eqi3ukwv3rsgh2sxmu7m6pprknrplgp7)
-set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-zaow3ozein6yl2x2wib2ih7zuxsxqikp)
-set(BLASPP_PREFIX   /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-6rpvyaew74upl772lz5v6cal6466azy6)
+set(SLATE_PREFIX    /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/slate-2023.11.05-x4dznn44tjb5l3tpl7s7uuogu3o5qfdz)
+set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-pph2uwrfujonebbyueaptvnm3elgz77e)
+set(BLASPP_PREFIX   /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-uffk4lufpj5ne7itkn27wcqcmj42zi5u)
 
 # Paths to headers
 set(SLATE_INC    ${SLATE_PREFIX}/include)
@@ -36,6 +36,12 @@ foreach(path_var IN ITEMS SLATE_LIB LAPACKPP_LIB BLASPP_LIB)
         message(FATAL_ERROR "Missing library file: ${${path_var}}")
     endif()
 endforeach()
+
+target_link_options(svd_slate PRIVATE
+    -Wl,--no-as-needed
+    -Wl,-rpath,${SLATE_PREFIX}/lib64
+    -Wl,-rpath,${LAPACKPP_PREFIX}/lib64
+    -Wl,-rpath,${BLASPP_PREFIX}/lib64)
 
 # Add include directories
 include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
