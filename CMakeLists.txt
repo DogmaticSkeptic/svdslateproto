@@ -26,8 +26,11 @@ link_directories(
 
 add_executable(svd_slate ./src/svd_slate.cpp)
 
+find_package(OpenMP REQUIRED)
+
 target_link_libraries(svd_slate
     ${SLATE_PREFIX}/lib64/libslate.so
     ${LAPACKPP_PREFIX}/lib64/liblapackpp.so
     ${BLASPP_PREFIX}/lib64/libblaspp.so
+    OpenMP::OpenMP_CXX
 )
