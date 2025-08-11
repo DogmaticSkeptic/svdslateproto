@@ -9,7 +9,7 @@ if (NOT CMAKE_CXX_COMPILER MATCHES "CC$")
 endif()
 
 set(SLATE_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/slate-2023.11.05-x4dznn44tjb5l3tpl7s7uuogu3o5qfdz)
-set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-bj7fxvgxz7uw6gi2mhy7ogkewxyer73x)
+set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-zaow3ozein6yl2x2wib2ih7zuxsxqikp)
 set(BLASPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-uffk4lufpj5ne7itkn27wcqcmj42zi5u)
 
 include_directories(
