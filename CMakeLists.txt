@@ -26,4 +26,8 @@ link_directories(
 
 add_executable(svd_slate ./src/svd_slate.cpp)
 
-target_link_libraries(svd_slate slate lapackpp blaspp)
+target_link_libraries(svd_slate
+    ${SLATE_PREFIX}/lib64/libslate.so
+    ${LAPACKPP_PREFIX}/lib64/liblapackpp.so
+    ${BLASPP_PREFIX}/lib64/libblaspp.so
+)
