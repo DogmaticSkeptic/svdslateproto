@@ -22,6 +22,7 @@ link_directories(
     ${SLATE_PREFIX}/lib64 ${SLATE_PREFIX}/lib
     ${LAPACKPP_PREFIX}/lib64 ${LAPACKPP_PREFIX}/lib
     ${BLASPP_PREFX}/lib64 ${BLASPP_PREFIX}/lib
+)
 
 add_executable(svd_slate svd_slate.cpp)
 
