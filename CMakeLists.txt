@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.18)
-project(svd_slate LANGUAGES CXX)
+project(svd_slate LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Require Cray compiler wrapper
+if (NOT CMAKE_C_COMPILER MATCHES "cc$")
+    message(FATAL_ERROR "Use: cmake -DCMAKE_C_COMPILER=cc ..")
+endif()
 if (NOT CMAKE_CXX_COMPILER MATCHES "CC$")
     message(FATAL_ERROR "Use: cmake -DCMAKE_CXX_COMPILER=CC ..")
 endif()
