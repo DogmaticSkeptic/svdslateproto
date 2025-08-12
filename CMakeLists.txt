@@ -40,10 +40,8 @@ endforeach()
 # Add include directories
 include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
 
-if ( NOT DEFINED TAMM_DIR )
-    set(TAMM_DIR "/global/homes/d/dogskep/AaronForkNWQ-Sim/tamm_install"
-      CACHE PATH "Path to external TAMM installation")
-endif()
+set(TAMM_DIR "/global/homes/d/dogskep/AaronForkNWQ-Sim/tamm_install"
+    CACHE PATH "Path to external TAMM installation")
 
 list(APPEND CMAKE_PREFIX_PATH "${TAMM_DIR}")
 
