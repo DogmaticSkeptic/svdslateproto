@@ -1,10 +1,9 @@
 # svdslateproto
 Prototype of svdslate
 
-
+Load the setuptamm bash script to start
 # Load Environment
 ```bash
-module load cmake
 module load spack/0.22
 spack env activate cuda
 spack load slate lapackpp blaspp
@@ -17,7 +16,7 @@ spack load slate lapackpp blaspp
 mkdir build
 cd build
 
-cmake -DCMAKE_CXX_COMPILER=CC ../source
+cmake -DCMAKE_CXX_COMPILER=CC ..
 make -j
 ```
 
