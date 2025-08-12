@@ -41,7 +41,7 @@ endforeach()
 include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
 
 if ( NOT DEFINED TAMM_DIR )
-    set(TAMM_DIR "${CMAKE_SOURCE_DIR}/../AaronForkNWQ-Sim/tamm_install"
+    set(TAMM_DIR "/global/homes/d/dogskep/AaronForkNWQ-Sim/tamm_install"
       CACHE PATH "Path to external TAMM installation")
 endif()
 
