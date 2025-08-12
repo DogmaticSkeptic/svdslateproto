@@ -72,7 +72,7 @@ target_link_libraries(svd_slate
     CUDA::cusolver
     -Wl,--end-group
     OpenMP::OpenMP_CXX
+    tamm::tamm
 )
 
-target_link_libraries(svd_slate PRIVATE tamm::tamm)
 target_compile_definitions(svd_slate PUBLIC TAMM_ENABLED)
