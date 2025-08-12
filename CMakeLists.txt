@@ -40,9 +40,15 @@ endforeach()
 # Add include directories
 include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
 
+if ( NOT DEFINED TAMM_DIR )
+    set(TAMM_DIR "${CMAKE_SOURCE_DIR}/../AaronForkNWQ-Sim/tamm_install"
+      CACHE PATH "Path to external TAMM installation")
+endif()
+
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(TAMM)
 
 # Target
 add_executable(svd_slate src/svd_slate.cpp)
@@ -67,3 +73,6 @@ target_link_libraries(svd_slate
     -Wl,--end-group
     OpenMP::OpenMP_CXX
 )
+
+target_link_libraries(svd_slate PRIVATE tamm::tamm)
+target_compile_definitions(svd_slate PUBLIC TAMM_ENABLED)
