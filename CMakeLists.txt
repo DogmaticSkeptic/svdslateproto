@@ -42,21 +42,28 @@ include_directories(${SLATE_INC} ${LAPACKPP_INC} ${BLASPP_INC})
 
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 # Target
 add_executable(svd_slate src/svd_slate.cpp)
 
-# Link libraries explicitly
+target_link_options(svd_slate PRIVATE
+    -Wl,--no-as-needed
+)
+
+get_target_property(_cudart CUDA::cudart IMPORTED_LOCATION)
+get_filename_component(_cuda_libdir ${_cudart} DIRECTORY)
+list(APPEND CMAKE_BUILD_RPATH ${_cuda_libdir})
+
 target_link_libraries(svd_slate
+    -Wl,--start-group
     ${SLATE_LIB}
     ${LAPACKPP_LIB}
     ${BLASPP_LIB}
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
+    CUDA::cusolver
+    -Wl,--end-group
     OpenMP::OpenMP_CXX
-)
-
-target_link_options(svd_slate PRIVATE
-    -Wl,--no-as-needed
-    -Wl,-rpath,${SLATE_PREFIX}/lib64
-    -Wl,-rpath,${LAPACKPP_PREFIX}/lib64
-    -Wl,-rpath,${BLASPP_PREFIX}/lib64
 )
