@@ -45,6 +45,8 @@ if ( NOT DEFINED TAMM_DIR )
       CACHE PATH "Path to external TAMM installation")
 endif()
 
+list(APPEND CMAKE_PREFIX_PATH "${TAMM_DIR}")
+
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
 find_package(CUDAToolkit REQUIRED)
