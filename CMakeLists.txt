@@ -52,6 +52,13 @@ message(${TAMM_DIR})
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+
+set(CRAY_LIBSCI_ROOT "/opt/cray/pe/libsci/24.07.0/NVIDIA/23.3/x86_64")
+set(BLAS_LIBRARIES   "${CRAY_LIBSCI_ROOT}/lib/libsci_nvidia_mp.so" CACHE STRING "" FORCE)
+set(LAPACK_LIBRARIES "${CRAY_LIBSCI_ROOT}/lib/libsci_nvidia_mp.so" CACHE STRING "" FORCE)
+link_directories("${CRAY_LIBSCI_ROOT}/lib")
+list(APPEND CMAKE_BUILD_RPATH "${CRAY_LIBSCI_ROOT}/lib")
+
 find_package(TAMM)
 
 # Target
