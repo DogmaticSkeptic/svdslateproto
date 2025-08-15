@@ -63,7 +63,7 @@ find_package(TAMM)
 
 # Target
 add_executable(svd_slate src/svd_slate.cpp)
-add_executable(svd_slate_only src_svd_slate_only.cpp)
+add_executable(svd_slate_only src/svd_slate_only.cpp)
 
 target_link_options(svd_slate PRIVATE
     -Wl,--no-as-needed
