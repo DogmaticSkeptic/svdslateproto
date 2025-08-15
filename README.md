@@ -7,6 +7,9 @@ Load the setuptamm bash script to start
 module load spack/0.22
 spack env activate cuda
 spack load slate lapackpp blaspp
+cd ~/AaronForkNWQ-Sim/NWQ-Sim/
+source environment/setup_tamm_perlmutter.sh
+cd ~/svdslateproto
 ```
 
 
