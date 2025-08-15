@@ -10,6 +10,7 @@ spack load slate lapackpp blaspp
 cd ~/AaronForkNWQ-Sim/NWQ-Sim/
 source environment/setup_tamm_perlmutter.sh
 cd ~/svdslateproto
+module load gcc
 ```
 
 
