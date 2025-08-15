@@ -20,7 +20,7 @@ module load gcc
 mkdir build
 cd build
 
-cmake -DCMAKE_CXX_COMPILER=CC ..
+cmake -DCMAKE_C_COMPILER=cc -DCMAKE_CXX_COMPILER=CC ..
 make -j
 ```
 
