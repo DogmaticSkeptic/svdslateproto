@@ -64,6 +64,7 @@ find_package(TAMM)
 # Target
 add_executable(svd_slate src/svd_slate.cpp)
 add_executable(svd_slate_only src/svd_slate_only.cpp)
+add_executable(svd_tamm src/svd_tamm.cpp)
 
 target_link_options(svd_slate PRIVATE
     -Wl,--no-as-needed
@@ -103,3 +104,20 @@ target_link_libraries(svd_slate_only
 )
 
 target_compile_definitions(svd_slate_only PUBLIC TAMM_ENABLED)
+
+
+target_link_libraries(svd_tamm
+    -Wl,--start-group
+    ${SLATE_LIB}
+    ${LAPACKPP_LIB}
+    ${BLASPP_LIB}
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
+    CUDA::cusolver
+    -Wl,--end-group
+    OpenMP::OpenMP_CXX
+    tamm::tamm
+)
+
+target_compile_definitions(svd_tamm PUBLIC TAMM_ENABLED)
