@@ -20,7 +20,7 @@ set(BLASPP_PREFIX   /global/common/software/spackecp/perlmutter/v0.22/96029/spac
 # Path to external ITensor installation
 set(ITENSOR_ROOT "../AaronForkNWQ-Sim/itensor"
     CACHE PATH "Path to external iTensor installation")
-
+message("Itensor Root: ${ITENSOR_ROOT}")
 # Check that the directory and library actually exist
 if (IS_DIRECTORY "${ITENSOR_ROOT}" AND EXISTS "${ITENSOR_ROOT}/lib/libitensor.a")
     set(ITENSOR_FOUND TRUE CACHE BOOL "ITensor library available")
