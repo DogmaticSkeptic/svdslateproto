@@ -1,8 +1,10 @@
 #include <tamm/tamm.hpp>
+#include <slate/slate.hh>
 #ifdef I
 #undef I
 #endif
-#include <slate/slate.hh>
+#include <Eigen/Dense>
+#include <itensor/all.h>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -147,6 +149,102 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
 
+static double time_eigen_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
+    tamm::AtomicCounterGA ac{world_pg, 1};
+    ac.allocate(0);
+    world_pg.barrier();
+    double t0 = 0.0, t1 = 0.0;
+    if (world_pg.rank().value() == 0) {
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    const int64_t n = 2 * N;
+    while (true) {
+        int64_t idx = ac.fetch_add(0, 1);
+        if (idx >= n_svd) break;
+        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> A(n, n);
+        for (int64_t j = 0; j < n; ++j) {
+            for (int64_t i = 0; i < n; ++i) {
+                double x = double(i);
+                double y = double(j);
+                A(i, j) = std::sin(0.001 * (x + 3.0 * y));
+            }
+        }
+        Eigen::BDCSVD<Eigen::MatrixXd> svd(A, 0);
+    }
+    world_pg.barrier();
+    if (world_pg.rank().value() == 0) {
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    ac.deallocate();
+    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+}
+
+static double time_itensor_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
+    tamm::AtomicCounterGA ac{world_pg, 1};
+    ac.allocate(0);
+    world_pg.barrier();
+    double t0 = 0.0, t1 = 0.0;
+    if (world_pg.rank().value() == 0) {
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    while (true) {
+        int64_t idx = ac.fetch_add(0, 1);
+        if (idx >= n_contr) break;
+        size_t M = static_cast<size_t>(N);
+        size_t bt = std::min(M, size_t(64));
+        itensor::Index l(int(M), "l");
+        itensor::Index p1(2, "p1");
+        itensor::Index p2(2, "p2");
+        itensor::Index b(int(bt), "b");
+        itensor::Index r(int(M), "r");
+        itensor::ITensor A(l, p1, b), B(b, p2, r), C(l, p1, p2, r);
+        A.fill(1.0);
+        B.fill(1.0);
+        C = A * B;
+    }
+    world_pg.barrier();
+    if (world_pg.rank().value() == 0) {
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    ac.deallocate();
+    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+}
+
+static double time_itensor_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
+    tamm::AtomicCounterGA ac{world_pg, 1};
+    ac.allocate(0);
+    world_pg.barrier();
+    double t0 = 0.0, t1 = 0.0;
+    if (world_pg.rank().value() == 0) {
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    int64_t n = 2 * N;
+    while (true) {
+        int64_t idx = ac.fetch_add(0, 1);
+        if (idx >= n_svd) break;
+        itensor::Index x(int(n), "x");
+        itensor::Index y(int(n), "y");
+        itensor::ITensor A(x, y);
+        for (int64_t j = 1; j <= n; ++j) {
+            for (int64_t i = 1; i <= n; ++i) {
+                double xr = double(i - 1);
+                double yr = double(j - 1);
+                A.set(i, j, std::sin(0.001 * (xr + 3.0 * yr)));
+            }
+        }
+        auto [U, S, V] = itensor::svd(A, {x}, {y});
+        (void)U;
+        (void)S;
+        (void)V;
+    }
+    world_pg.barrier();
+    if (world_pg.rank().value() == 0) {
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    }
+    ac.deallocate();
+    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+}
+
 int main(int argc, char** argv) {
     tamm::initialize(argc, argv);
     tamm::ProcGroup world_pg = tamm::ProcGroup::create_world_coll();
@@ -173,7 +271,7 @@ int main(int argc, char** argv) {
                   << " minN " << minN << " maxN " << maxN
                   << " step " << step << " csv " << csv << std::endl;
         std::ofstream ofs(csv, std::ios::out | std::ios::trunc);
-        ofs << "bond_dim,t_contr_queue,t_contr_batch,t_svd,t_total\n";
+        ofs << "bond_dim,t_contr_queue,t_contr_batch,t_svd_slate,t_svd_eigen,t_contr_itensor,t_svd_itensor,t_total\n";
         ofs.close();
     }
 
@@ -186,17 +284,32 @@ int main(int argc, char** argv) {
         double t_contr_b = time_tamm_contractions_batch(N, n_contr, world_pg);
         if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
 
-        if (rank == 0) std::cout << "N " << N << " svd start" << std::endl;
-        double t_svd = time_slate_svds(N, n_svd, world_pg);
-        if (rank == 0) std::cout << "N " << N << " svd done " << std::fixed << std::setprecision(6) << t_svd << " s" << std::endl;
+        if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
+        double t_slate = time_slate_svds(N, n_svd, world_pg);
+        if (rank == 0) std::cout << "N " << N << " svd slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
+
+        if (rank == 0) std::cout << "N " << N << " svd eigen start" << std::endl;
+        double t_eigen = time_eigen_svds(N, n_svd, world_pg);
+        if (rank == 0) std::cout << "N " << N << " svd eigen done " << std::fixed << std::setprecision(6) << t_eigen << " s" << std::endl;
+
+        if (rank == 0) std::cout << "N " << N << " itensor contractions start" << std::endl;
+        double t_it_contr = time_itensor_contractions_queue(N, n_contr, world_pg);
+        if (rank == 0) std::cout << "N " << N << " itensor contractions done " << std::fixed << std::setprecision(6) << t_it_contr << " s" << std::endl;
+
+        if (rank == 0) std::cout << "N " << N << " itensor svd start" << std::endl;
+        double t_it_svd = time_itensor_svds(N, n_svd, world_pg);
+        if (rank == 0) std::cout << "N " << N << " itensor svd done " << std::fixed << std::setprecision(6) << t_it_svd << " s" << std::endl;
 
         if (rank == 0) {
-            double t_total = t_contr_q + t_svd;
+            double t_total = t_contr_q + t_slate;
             std::ofstream ofs(csv, std::ios::out | std::ios::app);
             ofs << N << ","
                 << std::fixed << std::setprecision(6) << t_contr_q << ","
                 << std::fixed << std::setprecision(6) << t_contr_b << ","
-                << std::fixed << std::setprecision(6) << t_svd << ","
+                << std::fixed << std::setprecision(6) << t_slate << ","
+                << std::fixed << std::setprecision(6) << t_eigen << ","
+                << std::fixed << std::setprecision(6) << t_it_contr << ","
+                << std::fixed << std::setprecision(6) << t_it_svd << ","
                 << std::fixed << std::setprecision(6) << t_total << "\n";
             ofs.close();
             std::cout << "N " << N << " total " << std::fixed << std::setprecision(6) << t_total << " s" << std::endl;

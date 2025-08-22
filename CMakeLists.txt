@@ -17,6 +17,25 @@ set(SLATE_PREFIX    /global/common/software/spackecp/perlmutter/v0.22/96029/spac
 set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/lapackpp-2023.11.05-pph2uwrfujonebbyueaptvnm3elgz77e)
 set(BLASPP_PREFIX   /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-uffk4lufpj5ne7itkn27wcqcmj42zi5u)
 
+# Path to external ITensor installation
+set(ITENSOR_ROOT "../AaronForkNWQ-Sim/itensor"
+    CACHE PATH "Path to external iTensor installation")
+
+# Check that the directory and library actually exist
+if (IS_DIRECTORY "${ITENSOR_ROOT}" AND EXISTS "${ITENSOR_ROOT}/lib/libitensor.a")
+    set(ITENSOR_FOUND TRUE CACHE BOOL "ITensor library available")
+
+    include_directories("${ITENSOR_ROOT}")
+
+    add_library(itensor STATIC IMPORTED)
+    set_target_properties(itensor PROPERTIES
+        IMPORTED_LOCATION "${ITENSOR_ROOT}/lib/libitensor.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ITENSOR_ROOT}"
+    )
+else()
+    set(ITENSOR_FOUND FALSE CACHE BOOL "ITensor library available")
+endif()
+
 # Paths to headers
 set(SLATE_INC    ${SLATE_PREFIX}/include)
 set(LAPACKPP_INC ${LAPACKPP_PREFIX}/include)
@@ -118,6 +137,7 @@ target_link_libraries(svd_tamm
     -Wl,--end-group
     OpenMP::OpenMP_CXX
     tamm::tamm
+    itensor
 )
 
 target_compile_definitions(svd_tamm PUBLIC TAMM_ENABLED)
