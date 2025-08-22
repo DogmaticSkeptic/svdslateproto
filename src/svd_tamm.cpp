@@ -318,5 +318,16 @@ int main(int argc, char** argv) {
                 << std::fixed << std::setprecision(6) << t_it_svd << ","
                 << std::fixed << std::setprecision(6) << t_total << "\n";
             ofs.close();
-            std::cout << "N " << N << " total "
+            std::cout << "N " << N << " total " << std::fixed
+                      << std::setprecision(6) << t_total << " s" << std::endl;
+        }
+        world_pg.barrier();
+    }
+
+    if (rank == 0)
+        std::cout << "done" << std::endl;
+
+    tamm::finalize();
+    return 0;
+}
 
