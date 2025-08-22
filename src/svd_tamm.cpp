@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <iostream>
 #include <chrono>
-#include <tamm/rmm_memory_pool.hpp>
 
 using std::int64_t;
 
@@ -70,7 +69,6 @@ static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::Pr
     auto& gpu_mem_pool = tamm::RMMMemoryManager::getInstance().getDeviceMemoryPool();
 
     auto ta0 = std::chrono::high_resolution_clock::now();
-    sch.allocate(A, B, C).set_memory_pool(&gpu_mem_pool).execute();
     auto ta1 = std::chrono::high_resolution_clock::now();
 
     world_pg.barrier();
