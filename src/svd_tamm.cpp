@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <iostream>
 #include <chrono>
+#include <tamm/rmm_memory_pool.hpp>
 
 using std::int64_t;
 
@@ -46,71 +47,77 @@ struct QueueTiming {
     int64_t n_done;
 };
 
+
 static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
-    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::local};
+    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::nw, tamm::MemoryManagerKind::local};
     tamm::Scheduler sch{ec};
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
+
+    size_t M = static_cast<size_t>(N);
+    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
+    tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
+    tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
+    auto [l, b, r] = bond.labels<3>("all");
+    auto [p1, p2] = phys.labels<2>("all");
+
+    tamm::LocalTensor<T> A{l, p1, b};
+    tamm::LocalTensor<T> B{b, p2, r};
+    tamm::LocalTensor<T> C{l, p1, p2, r};
+
+    auto& gpu_mem_pool = tamm::RMMMemoryManager::getInstance().getDeviceMemoryPool();
+
+    auto ta0 = std::chrono::high_resolution_clock::now();
+    sch.allocate(A, B, C).set_memory_pool(&gpu_mem_pool).execute();
+    auto ta1 = std::chrono::high_resolution_clock::now();
+
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-    double alloc_sum = 0.0;
+
+    double alloc_sum = std::chrono::duration<double>(ta1 - ta0).count();
     double init_sum = 0.0;
     double contr_sum = 0.0;
     double dealloc_sum = 0.0;
     int64_t n_done = 0;
+
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
         if (idx >= n_contr) break;
-        size_t M = static_cast<size_t>(N);
-        auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
-        tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
-        tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
-        auto [l, b, r] = bond.labels<3>("all");
-        auto [p1, p2] = phys.labels<2>("all");
-        tamm::Tensor<T> A({l, p1, b});
-        tamm::Tensor<T> B({b, p2, r});
-        tamm::Tensor<T> C({l, p1, p2, r});
-        A.set_dense();
-        B.set_dense();
-        C.set_dense();
-        auto ta0 = std::chrono::high_resolution_clock::now();
-        sch.allocate(A, B, C);
-        sch.execute(ec.exhw(), false);
-        auto ta1 = std::chrono::high_resolution_clock::now();
+
         auto ti0 = std::chrono::high_resolution_clock::now();
         sch(A() = T(1.0));
         sch(B() = T(1.0));
         sch(C() = T(0.0));
-        sch.execute(ec.exhw(), false);
+        sch.execute(tamm::ExecutionHW::GPU, false);
         auto ti1 = std::chrono::high_resolution_clock::now();
+
         auto tc0 = std::chrono::high_resolution_clock::now();
         sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r));
-        sch.execute(ec.exhw(), false);
+        sch.execute(tamm::ExecutionHW::GPU, false);
         auto tc1 = std::chrono::high_resolution_clock::now();
-        auto td0 = std::chrono::high_resolution_clock::now();
-        sch.deallocate(A, B, C);
-        sch.execute(ec.exhw(), false);
-        auto td1 = std::chrono::high_resolution_clock::now();
-        double t_alloc = std::chrono::duration<double>(ta1 - ta0).count();
-        double t_init = std::chrono::duration<double>(ti1 - ti0).count();
-        double t_contr = std::chrono::duration<double>(tc1 - tc0).count();
-        double t_dealloc = std::chrono::duration<double>(td1 - td0).count();
-        alloc_sum += t_alloc;
-        init_sum += t_init;
-        contr_sum += t_contr;
-        dealloc_sum += t_dealloc;
+
+        init_sum += std::chrono::duration<double>(ti1 - ti0).count();
+        contr_sum += std::chrono::duration<double>(tc1 - tc0).count();
         n_done += 1;
     }
+
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
+
+    auto td0 = std::chrono::high_resolution_clock::now();
+    sch.deallocate(A, B, C).execute();
+    auto td1 = std::chrono::high_resolution_clock::now();
+    dealloc_sum = std::chrono::duration<double>(td1 - td0).count();
+
     ac.deallocate();
+
     QueueTiming qt;
     qt.total = (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
     qt.alloc_sum = alloc_sum;
