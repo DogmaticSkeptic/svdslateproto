@@ -143,7 +143,7 @@ target_link_libraries(svd_tamm
 
 target_compile_definitions(svd_tamm PUBLIC TAMM_ENABLED)
 
-target_link_libraries(rank_scale PUBLIC TAMM_ENABLED
+target_link_libraries(rank_scale
     -Wl,--start-group
     ${SLATE_LIB}
     ${LAPACKPP_LIB}
