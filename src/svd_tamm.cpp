@@ -1,3 +1,4 @@
+#include <mpi.h>
 #include <tamm/tamm.hpp>
 #include <slate/slate.hh>
 #ifdef I
@@ -47,8 +48,7 @@ static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGro
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
@@ -75,8 +75,7 @@ static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGro
     }
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     ac.deallocate();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -101,8 +100,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     for (int i = 0; i < n_contr; ++i) {
         A_list.emplace_back(std::initializer_list<tamm::TiledIndexLabel>{l, p1, b});
@@ -121,8 +119,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     sch.execute(ec.exhw(), false);
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
@@ -133,8 +130,7 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     const int64_t n = 2 * N;
     const int64_t nb = 192;
@@ -151,8 +147,7 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     }
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     ac.deallocate();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -162,8 +157,7 @@ static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_p
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         const int64_t n = 2 * N;
         for (int i = 0; i < n_svd; ++i) {
             Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> A(n, n);
@@ -176,8 +170,7 @@ static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_p
             }
             Eigen::BDCSVD<Eigen::MatrixXd> svd(A, 0);
         }
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -187,8 +180,7 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         for (int i = 0; i < n_contr; ++i) {
             size_t M = static_cast<size_t>(N);
             size_t bt = std::min(M, size_t(64));
@@ -202,8 +194,7 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
             B.fill(1.0);
             C = A * B;
         }
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -213,8 +204,7 @@ static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         int64_t n = 2 * N;
         for (int i = 0; i < n_svd; ++i) {
             itensor::Index x(int(n), "x");
@@ -227,13 +217,10 @@ static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world
                     A.set(ii, jj, std::sin(0.001 * (xr + 3.0 * yr)));
                 }
             }
-            auto [U, S, V] = itensor::svd(A, {x}, {y});
-            (void)U;
-            (void)S;
-            (void)V;
+            auto r = itensor::svd(A, {x}, {y});
+            (void)r;
         }
-        t1 = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -244,73 +231,87 @@ int main(int argc, char** argv) {
     tamm::ProcGroup world_pg = tamm::ProcGroup::create_world_coll();
     int rank = world_pg.rank().value();
     int size = world_pg.size().value();
+    const double time_limit = 10.0;
+    bool stop_contr_queue = false;
+    bool stop_contr_batch = false;
+    bool stop_svd_slate = false;
+    bool stop_svd_eigen = false;
+    bool stop_contr_itensor = false;
+    bool stop_svd_itensor = false;
     int n_contr = 100;
     int n_svd = 100;
     int64_t minN = 128;
     int64_t maxN = 512;
     int64_t step = 128;
     std::string csv = "timings.csv";
-
     if (argc >= 2) n_contr = std::stoi(argv[1]);
     if (argc >= 3) n_svd = std::stoi(argv[2]);
     if (argc >= 4) minN = std::stoll(argv[3]);
     if (argc >= 5) maxN = std::stoll(argv[4]);
     if (argc >= 6) step = std::stoll(argv[5]);
     if (argc >= 7) csv = std::string(argv[6]);
-
     if (rank == 0) {
         std::cout << "ranks " << size << std::endl;
-        std::cout << "config n_contr " << n_contr << " n_svd " << n_svd
-                  << " minN " << minN << " maxN " << maxN << " step " << step
-                  << " csv " << csv << std::endl;
+        std::cout << "config n_contr " << n_contr << " n_svd " << n_svd << " minN " << minN << " maxN " << maxN << " step " << step << " csv " << csv << std::endl;
         std::ofstream ofs(csv, std::ios::out | std::ios::trunc);
-        ofs << "bond_dim,t_contr_queue,t_contr_batch,t_svd_slate,"
-               "t_svd_eigen_host,t_contr_itensor_host,"
-               "t_svd_itensor_host,t_total\n";
+        ofs << "bond_dim,t_contr_queue,t_contr_batch,t_svd_slate,t_svd_eigen_host,t_contr_itensor_host,t_svd_itensor_host,t_total\n";
         ofs.close();
     }
-
     for (int64_t N = minN; N <= maxN; N += step) {
         if (rank == 0) std::cout << "N " << N << " contractions queue start" << std::endl;
-        double t_contr_q = time_tamm_contractions_queue(N, n_contr, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " contractions queue done " << std::fixed
-                      << std::setprecision(6) << t_contr_q << " s" << std::endl;
-
+        double t_contr_q = -1.0;
+        if (!stop_contr_queue) t_contr_q = time_tamm_contractions_queue(N, n_contr, world_pg);
+        int exceeded = 0;
+        if (t_contr_q > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_contr_queue = true;
+        if (rank == 0) std::cout << "N " << N << " contractions queue done " << std::fixed << std::setprecision(6) << t_contr_q << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " contractions batch start" << std::endl;
-        double t_contr_b = 0; // time_tamm_contractions_batch(N, n_contr, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " contractions batch done " << std::fixed
-                      << std::setprecision(6) << t_contr_b << " s" << std::endl;
-
+        double t_contr_b = -1.0;
+        if (!stop_contr_batch) t_contr_b = time_tamm_contractions_batch(N, n_contr, world_pg);
+        exceeded = 0;
+        if (t_contr_b > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_contr_batch = true;
+        if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
-        double t_slate = 0; // time_slate_svds(N, n_svd, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " svd slate done " << std::fixed
-                      << std::setprecision(6) << t_slate << " s" << std::endl;
-
+        double t_slate = -1.0;
+        if (!stop_svd_slate) t_slate = time_slate_svds(N, n_svd, world_pg);
+        exceeded = 0;
+        if (t_slate > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_svd_slate = true;
+        if (rank == 0) std::cout << "N " << N << " svd slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " svd eigen host start" << std::endl;
-        double t_eigen = 0; // time_eigen_svds_host(N, n_svd, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " svd eigen host done " << std::fixed
-                      << std::setprecision(6) << t_eigen << " s" << std::endl;
-
+        double t_eigen = -1.0;
+        if (!stop_svd_eigen) t_eigen = time_eigen_svds_host(N, n_svd, world_pg);
+        exceeded = 0;
+        if (t_eigen > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_svd_eigen = true;
+        if (rank == 0) std::cout << "N " << N << " svd eigen host done " << std::fixed << std::setprecision(6) << t_eigen << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " itensor contractions host start" << std::endl;
-        double t_it_contr = time_itensor_contractions_host(N, n_contr, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " itensor contractions host done " << std::fixed
-                      << std::setprecision(6) << t_it_contr << " s" << std::endl;
-
+        double t_it_contr = -1.0;
+        if (!stop_contr_itensor) t_it_contr = time_itensor_contractions_host(N, n_contr, world_pg);
+        exceeded = 0;
+        if (t_it_contr > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_contr_itensor = true;
+        if (rank == 0) std::cout << "N " << N << " itensor contractions host done " << std::fixed << std::setprecision(6) << t_it_contr << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " itensor svd host start" << std::endl;
-        double t_it_svd = 0; // time_itensor_svds_host(N, n_svd, world_pg);
-        if (rank == 0)
-            std::cout << "N " << N << " itensor svd host done " << std::fixed
-                      << std::setprecision(6) << t_it_svd << " s" << std::endl;
-
+        double t_it_svd = -1.0;
+        if (!stop_svd_itensor) t_it_svd = time_itensor_svds_host(N, n_svd, world_pg);
+        exceeded = 0;
+        if (t_it_svd > time_limit) exceeded = 1;
+        MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
+        if (exceeded) stop_svd_itensor = true;
+        if (rank == 0) std::cout << "N " << N << " itensor svd host done " << std::fixed << std::setprecision(6) << t_it_svd << " s" << std::endl;
         if (rank == 0) {
-            double t_total = t_contr_q + t_slate;
+            double t_total = -1.0;
+            if (t_contr_q >= 0.0 && t_slate >= 0.0) t_total = t_contr_q + t_slate;
             std::ofstream ofs(csv, std::ios::out | std::ios::app);
-            ofs << N << "," << std::fixed << std::setprecision(6) << t_contr_q << ","
+            ofs << N << ","
+                << std::fixed << std::setprecision(6) << t_contr_q << ","
                 << std::fixed << std::setprecision(6) << t_contr_b << ","
                 << std::fixed << std::setprecision(6) << t_slate << ","
                 << std::fixed << std::setprecision(6) << t_eigen << ","
@@ -318,15 +319,11 @@ int main(int argc, char** argv) {
                 << std::fixed << std::setprecision(6) << t_it_svd << ","
                 << std::fixed << std::setprecision(6) << t_total << "\n";
             ofs.close();
-            std::cout << "N " << N << " total " << std::fixed
-                      << std::setprecision(6) << t_total << " s" << std::endl;
+            std::cout << "N " << N << " total " << std::fixed << std::setprecision(6) << t_total << " s" << std::endl;
         }
         world_pg.barrier();
     }
-
-    if (rank == 0)
-        std::cout << "done" << std::endl;
-
+    if (rank == 0) std::cout << "done" << std::endl;
     tamm::finalize();
     return 0;
 }
