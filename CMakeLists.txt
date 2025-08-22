@@ -18,7 +18,7 @@ set(LAPACKPP_PREFIX /global/common/software/spackecp/perlmutter/v0.22/96029/spac
 set(BLASPP_PREFIX   /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/blaspp-2023.11.05-uffk4lufpj5ne7itkn27wcqcmj42zi5u)
 
 # Path to external ITensor installation
-set(ITENSOR_ROOT "../AaronForkNWQ-Sim/itensor"
+set(ITENSOR_ROOT "${CMAKE_SOURCE_DIR}/../AaronForkNWQ-Sim/itensor"
     CACHE PATH "Path to external iTensor installation")
 message("Itensor Root: ${ITENSOR_ROOT}")
 # Check that the directory and library actually exist
