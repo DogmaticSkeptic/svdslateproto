@@ -37,93 +37,49 @@ static void fill_local_tiles(slate::Matrix<double>& A) {
     }
 }
 
-struct QueueTiming {
-    double total;
-    double alloc_sum;
-    double init_sum;
-    double contr_sum;
-    double dealloc_sum;
-    int64_t n_done;
-};
-
-
-static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
+static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
-
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
-    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::nw, tamm::MemoryManagerKind::local};
+    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::local};
     tamm::Scheduler sch{ec};
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
-
-    size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
-    tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
-    tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
-    auto [l, b, r] = bond.labels<3>("all");
-    auto [p1, p2] = phys.labels<2>("all");
-
-    tamm::LocalTensor<T> A{l, p1, b};
-    tamm::LocalTensor<T> B{b, p2, r};
-    tamm::LocalTensor<T> C{l, p1, p2, r};
-
-    auto ta0 = std::chrono::high_resolution_clock::now();
-    sch.allocate(A, B, C).execute();
-    auto ta1 = std::chrono::high_resolution_clock::now();
-
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-
-    double alloc_sum = std::chrono::duration<double>(ta1 - ta0).count();
-    double init_sum = 0.0;
-    double contr_sum = 0.0;
-    double dealloc_sum = 0.0;
-    int64_t n_done = 0;
-
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
         if (idx >= n_contr) break;
-
-        auto ti0 = std::chrono::high_resolution_clock::now();
+        size_t M = static_cast<size_t>(N);
+        auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
+        tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
+        tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
+        auto [l, b, r] = bond.labels<3>("all");
+        auto [p1, p2] = phys.labels<2>("all");
+        tamm::Tensor<T> A({l, p1, b});
+        tamm::Tensor<T> B({b, p2, r});
+        tamm::Tensor<T> C({l, p1, p2, r});
+        A.set_dense();
+        B.set_dense();
+        C.set_dense();
+        sch.allocate(A, B, C);
         sch(A() = T(1.0));
         sch(B() = T(1.0));
         sch(C() = T(0.0));
-        sch.execute(ec.exhw(), false);
-        auto ti1 = std::chrono::high_resolution_clock::now();
-
-        auto tc0 = std::chrono::high_resolution_clock::now();
         sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r));
+        sch.deallocate(A, B, C);
         sch.execute(ec.exhw(), false);
-        auto tc1 = std::chrono::high_resolution_clock::now();
-
-        init_sum += std::chrono::duration<double>(ti1 - ti0).count();
-        contr_sum += std::chrono::duration<double>(tc1 - tc0).count();
-        n_done += 1;
     }
-
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-
-    auto td0 = std::chrono::high_resolution_clock::now();
-    sch.deallocate(A, B, C).execute();
-    auto td1 = std::chrono::high_resolution_clock::now();
-    dealloc_sum = std::chrono::duration<double>(td1 - td0).count();
-
     ac.deallocate();
-
-    QueueTiming qt;
-    qt.total = (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
-    qt.alloc_sum = alloc_sum;
-    qt.init_sum = init_sum;
-    qt.contr_sum = contr_sum;
-    qt.dealloc_sum = dealloc_sum;
-    qt.n_done = n_done;
-    return qt;
+    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
 
 static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
@@ -145,7 +101,8 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     for (int i = 0; i < n_contr; ++i) {
         A_list.emplace_back(std::initializer_list<tamm::TiledIndexLabel>{l, p1, b});
@@ -164,7 +121,8 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     sch.execute(ec.exhw(), false);
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
@@ -175,7 +133,8 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     const int64_t n = 2 * N;
     const int64_t nb = 192;
@@ -188,11 +147,12 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
         fill_local_tiles(A);
         std::vector<double> S(static_cast<size_t>(n));
         slate::Matrix<double> U, VT;
-        slate::svd(A, S, U, VT, { { slate::Option::Target, slate::Target::Devices } });
+        slate::svd(A, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
     }
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     ac.deallocate();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -202,7 +162,8 @@ static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_p
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         const int64_t n = 2 * N;
         for (int i = 0; i < n_svd; ++i) {
             Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> A(n, n);
@@ -215,7 +176,8 @@ static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_p
             }
             Eigen::BDCSVD<Eigen::MatrixXd> svd(A, 0);
         }
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -225,7 +187,8 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         for (int i = 0; i < n_contr; ++i) {
             size_t M = static_cast<size_t>(N);
             size_t bt = std::min(M, size_t(64));
@@ -239,7 +202,8 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
             B.fill(1.0);
             C = A * B;
         }
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -249,7 +213,8 @@ static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t0 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         int64_t n = 2 * N;
         for (int i = 0; i < n_svd; ++i) {
             itensor::Index x(int(n), "x");
@@ -263,9 +228,12 @@ static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world
                 }
             }
             auto [U, S, V] = itensor::svd(A, {x}, {y});
-            (void)U; (void)S; (void)V;
+            (void)U;
+            (void)S;
+            (void)V;
         }
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        t1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
@@ -276,7 +244,6 @@ int main(int argc, char** argv) {
     tamm::ProcGroup world_pg = tamm::ProcGroup::create_world_coll();
     int rank = world_pg.rank().value();
     int size = world_pg.size().value();
-
     int n_contr = 100;
     int n_svd = 100;
     int64_t minN = 128;
@@ -294,55 +261,56 @@ int main(int argc, char** argv) {
     if (rank == 0) {
         std::cout << "ranks " << size << std::endl;
         std::cout << "config n_contr " << n_contr << " n_svd " << n_svd
-                  << " minN " << minN << " maxN " << maxN
-                  << " step " << step << " csv " << csv << std::endl;
+                  << " minN " << minN << " maxN " << maxN << " step " << step
+                  << " csv " << csv << std::endl;
         std::ofstream ofs(csv, std::ios::out | std::ios::trunc);
-        ofs << "bond_dim,t_contr_queue,t_alloc_q_avg,t_init_q_avg,t_contr_q_avg,t_dealloc_q_avg,t_contr_batch,t_svd_slate,t_svd_eigen_host,t_contr_itensor_host,t_svd_itensor_host,t_total\n";
+        ofs << "bond_dim,t_contr_queue,t_contr_batch,t_svd_slate,"
+               "t_svd_eigen_host,t_contr_itensor_host,"
+               "t_svd_itensor_host,t_total\n";
         ofs.close();
     }
 
     for (int64_t N = minN; N <= maxN; N += step) {
         if (rank == 0) std::cout << "N " << N << " contractions queue start" << std::endl;
-        QueueTiming qt = time_tamm_contractions_queue(N, n_contr, world_pg);
-        double t_contr_q = qt.total;
-        double alloc_avg = (qt.n_done > 0 ? qt.alloc_sum / double(qt.n_done) : 0.0);
-        double init_avg = (qt.n_done > 0 ? qt.init_sum / double(qt.n_done) : 0.0);
-        double contr_avg = (qt.n_done > 0 ? qt.contr_sum / double(qt.n_done) : 0.0);
-        double dealloc_avg = (qt.n_done > 0 ? qt.dealloc_sum / double(qt.n_done) : 0.0);
-        if (rank == 0) {
-            std::cout << "N " << N << " contractions queue done " << std::fixed << std::setprecision(6) << t_contr_q << " s" << std::endl;
-            std::cout << "N " << N << " queue avg alloc " << alloc_avg << " s init " << init_avg << " s contr " << contr_avg << " s dealloc " << dealloc_avg << " s" << std::endl;
-        }
+        double t_contr_q = time_tamm_contractions_queue(N, n_contr, world_pg);
+        if (rank == 0)
+            std::cout << "N " << N << " contractions queue done " << std::fixed
+                      << std::setprecision(6) << t_contr_q << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " contractions batch start" << std::endl;
-        double t_contr_b = 0;
-        if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
+        double t_contr_b = 0; // time_tamm_contractions_batch(N, n_contr, world_pg);
+        if (rank == 0)
+            std::cout << "N " << N << " contractions batch done " << std::fixed
+                      << std::setprecision(6) << t_contr_b << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
-        double t_slate = 0;
-        if (rank == 0) std::cout << "N " << N << " svd slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
+        double t_slate = 0; // time_slate_svds(N, n_svd, world_pg);
+        if (rank == 0)
+            std::cout << "N " << N << " svd slate done " << std::fixed
+                      << std::setprecision(6) << t_slate << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " svd eigen host start" << std::endl;
-        double t_eigen = 0;
-        if (rank == 0) std::cout << "N " << N << " svd eigen host done " << std::fixed << std::setprecision(6) << t_eigen << " s" << std::endl;
+        double t_eigen = 0; // time_eigen_svds_host(N, n_svd, world_pg);
+        if (rank == 0)
+            std::cout << "N " << N << " svd eigen host done " << std::fixed
+                      << std::setprecision(6) << t_eigen << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " itensor contractions host start" << std::endl;
         double t_it_contr = time_itensor_contractions_host(N, n_contr, world_pg);
-        if (rank == 0) std::cout << "N " << N << " itensor contractions host done " << std::fixed << std::setprecision(6) << t_it_contr << " s" << std::endl;
+        if (rank == 0)
+            std::cout << "N " << N << " itensor contractions host done " << std::fixed
+                      << std::setprecision(6) << t_it_contr << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " itensor svd host start" << std::endl;
-        double t_it_svd = 0;
-        if (rank == 0) std::cout << "N " << N << " itensor svd host done " << std::fixed << std::setprecision(6) << t_it_svd << " s" << std::endl;
+        double t_it_svd = 0; // time_itensor_svds_host(N, n_svd, world_pg);
+        if (rank == 0)
+            std::cout << "N " << N << " itensor svd host done " << std::fixed
+                      << std::setprecision(6) << t_it_svd << " s" << std::endl;
 
         if (rank == 0) {
             double t_total = t_contr_q + t_slate;
             std::ofstream ofs(csv, std::ios::out | std::ios::app);
-            ofs << N << ","
-                << std::fixed << std::setprecision(6) << t_contr_q << ","
-                << std::fixed << std::setprecision(6) << alloc_avg << ","
-                << std::fixed << std::setprecision(6) << init_avg << ","
-                << std::fixed << std::setprecision(6) << contr_avg << ","
-                << std::fixed << std::setprecision(6) << dealloc_avg << ","
+            ofs << N << "," << std::fixed << std::setprecision(6) << t_contr_q << ","
                 << std::fixed << std::setprecision(6) << t_contr_b << ","
                 << std::fixed << std::setprecision(6) << t_slate << ","
                 << std::fixed << std::setprecision(6) << t_eigen << ","
@@ -350,13 +318,5 @@ int main(int argc, char** argv) {
                 << std::fixed << std::setprecision(6) << t_it_svd << ","
                 << std::fixed << std::setprecision(6) << t_total << "\n";
             ofs.close();
-            std::cout << "N " << N << " total " << std::fixed << std::setprecision(6) << t_total << " s" << std::endl;
-        }
-        world_pg.barrier();
-    }
-
-    if (rank == 0) std::cout << "done" << std::endl;
-    tamm::finalize();
-    return 0;
-}
+            std::cout << "N " << N << " total "
 
