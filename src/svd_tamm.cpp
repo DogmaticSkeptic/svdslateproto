@@ -53,7 +53,7 @@ static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGro
         int64_t idx = ac.fetch_add(0, 1);
         if (idx >= n_contr) break;
         size_t M = static_cast<size_t>(N);
-        auto bt = static_cast<tamm::Tile>(std::min(M, size_t(64)));
+        auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
         tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
         tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
         auto [l, b, r] = bond.labels<3>("all");
@@ -82,7 +82,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     tamm::ExecutionContext ec{world_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(64)));
+    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto [l, b, r] = bond.labels<3>("all");
