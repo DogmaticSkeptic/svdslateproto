@@ -49,6 +49,7 @@ struct QueueTiming {
 
 static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
+
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::nw, tamm::MemoryManagerKind::local};
     tamm::Scheduler sch{ec};
@@ -66,9 +67,8 @@ static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::Pr
     tamm::LocalTensor<T> B{b, p2, r};
     tamm::LocalTensor<T> C{l, p1, p2, r};
 
-    auto& gpu_mem_pool = tamm::RMMMemoryManager::getInstance().getDeviceMemoryPool();
-
     auto ta0 = std::chrono::high_resolution_clock::now();
+    sch.allocate(A, B, C).execute();
     auto ta1 = std::chrono::high_resolution_clock::now();
 
     world_pg.barrier();
@@ -91,12 +91,12 @@ static QueueTiming time_tamm_contractions_queue(int64_t N, int n_contr, tamm::Pr
         sch(A() = T(1.0));
         sch(B() = T(1.0));
         sch(C() = T(0.0));
-        sch.execute(tamm::ExecutionHW::GPU, false);
+        sch.execute(ec.exhw(), false);
         auto ti1 = std::chrono::high_resolution_clock::now();
 
         auto tc0 = std::chrono::high_resolution_clock::now();
         sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r));
-        sch.execute(tamm::ExecutionHW::GPU, false);
+        sch.execute(ec.exhw(), false);
         auto tc1 = std::chrono::high_resolution_clock::now();
 
         init_sum += std::chrono::duration<double>(ti1 - ti0).count();
