@@ -35,23 +35,20 @@ static void fill_local_tiles(slate::Matrix<double>& A) {
     }
 }
 
-static double time_tamm_queue_active(int64_t N, int n_tasks, int active_ranks, tamm::ProcGroup world_pg) {
+static double time_tamm_roundrobin(int64_t N, int n_tasks, int k, tamm::ProcGroup world_pg) {
     using T = double;
+    int my = world_pg.rank().value();
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::local};
     tamm::Scheduler sch{ec};
-    tamm::AtomicCounterGA ac{world_pg, 1};
-    ac.allocate(0);
     world_pg.barrier();
     double t0 = 0.0;
     double t1 = 0.0;
-    if (world_pg.rank().value() == 0) {
+    if (my == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-    if (world_pg.rank().value() < active_ranks) {
-        while (true) {
-            int64_t idx = ac.fetch_add(0, 1);
-            if (idx >= n_tasks) break;
+    if (my < k) {
+        for (int64_t idx = my; idx < n_tasks; idx += k) {
             size_t M = static_cast<size_t>(N);
             auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
             tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
@@ -79,29 +76,25 @@ static double time_tamm_queue_active(int64_t N, int n_tasks, int active_ranks, t
         }
     }
     world_pg.barrier();
-    if (world_pg.rank().value() == 0) {
+    if (my == 0) {
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-    ac.deallocate();
-    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+    return (my == 0 ? (t1 - t0) : 0.0);
 }
 
-static double time_slate_svd_queue_active(int64_t N, int n_tasks, int active_ranks, tamm::ProcGroup world_pg) {
-    tamm::AtomicCounterGA ac{world_pg, 1};
-    ac.allocate(0);
+static double time_slate_roundrobin(int64_t N, int n_tasks, int k, tamm::ProcGroup world_pg) {
+    int my = world_pg.rank().value();
+    const int64_t n = 2 * N;
+    const int64_t nb = 192;
+    tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
     world_pg.barrier();
     double t0 = 0.0;
     double t1 = 0.0;
-    if (world_pg.rank().value() == 0) {
+    if (my == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-    if (world_pg.rank().value() < active_ranks) {
-        const int64_t n = 2 * N;
-        const int64_t nb = 192;
-        tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
-        while (true) {
-            int64_t idx = ac.fetch_add(0, 1);
-            if (idx >= n_tasks) break;
+    if (my < k) {
+        for (int64_t idx = my; idx < n_tasks; idx += k) {
             slate::Matrix<double> A(n, n, nb, 1, 1, self_pg.comm());
             A.insertLocalTiles();
             fill_local_tiles(A);
@@ -111,11 +104,10 @@ static double time_slate_svd_queue_active(int64_t N, int n_tasks, int active_ran
         }
     }
     world_pg.barrier();
-    if (world_pg.rank().value() == 0) {
+    if (my == 0) {
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
-    ac.deallocate();
-    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+    return (my == 0 ? (t1 - t0) : 0.0);
 }
 
 int main(int argc, char** argv) {
@@ -126,22 +118,25 @@ int main(int argc, char** argv) {
     int n_tasks = 100;
     int64_t N = 256;
     std::string csv = "scaling.csv";
+    int kmax = -1;
     if (argc >= 2) n_tasks = std::stoi(argv[1]);
     if (argc >= 3) N = std::stoll(argv[2]);
     if (argc >= 4) csv = std::string(argv[3]);
+    if (argc >= 5) kmax = std::stoi(argv[4]);
+    if (kmax <= 0 || kmax > size) kmax = size;
     if (rank == 0) {
         std::ofstream ofs(csv, std::ios::out | std::ios::trunc);
         ofs << "k,t_tamm,t_slate\n";
         ofs.close();
-        std::cout << "world " << size << " tasks " << n_tasks << " N " << N << " csv " << csv << std::endl;
+        std::cout << "world " << size << " tasks " << n_tasks << " N " << N << " csv " << csv << " kmax " << kmax << std::endl;
     }
     world_pg.barrier();
-    for (int k = 1; k <= size; ++k) {
+    for (int k = 1; k <= kmax; ++k) {
         if (rank == 0) std::cout << "k " << k << " tamm start" << std::endl;
-        double t_tamm = time_tamm_queue_active(N, n_tasks, k, world_pg);
+        double t_tamm = time_tamm_roundrobin(N, n_tasks, k, world_pg);
         if (rank == 0) std::cout << "k " << k << " tamm done " << std::fixed << std::setprecision(6) << t_tamm << " s" << std::endl;
         if (rank == 0) std::cout << "k " << k << " slate start" << std::endl;
-        double t_slate = time_slate_svd_queue_active(N, n_tasks, k, world_pg);
+        double t_slate = time_slate_roundrobin(N, n_tasks, k, world_pg);
         if (rank == 0) std::cout << "k " << k << " slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
         if (rank == 0) {
             std::ofstream ofs(csv, std::ios::out | std::ios::app);
