@@ -285,11 +285,11 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " contractions queue done " << std::fixed << std::setprecision(6) << t_contr_q << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " contractions batch start" << std::endl;
-        double t_contr_b = time_tamm_contractions_batch(N, n_contr, world_pg);
+        double t_contr_b = 0;//time_tamm_contractions_batch(N, n_contr, world_pg);
         if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
-        double t_slate = time_slate_svds(N, n_svd, world_pg);
+        double t_slate = 0;//time_slate_svds(N, n_svd, world_pg);
         if (rank == 0) std::cout << "N " << N << " svd slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " svd eigen host start" << std::endl;
@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " itensor contractions host done " << std::fixed << std::setprecision(6) << t_it_contr << " s" << std::endl;
 
         if (rank == 0) std::cout << "N " << N << " itensor svd host start" << std::endl;
-        double t_it_svd = time_itensor_svds_host(N, n_svd, world_pg);
+        double t_it_svd = 0;//time_itensor_svds_host(N, n_svd, world_pg);
         if (rank == 0) std::cout << "N " << N << " itensor svd host done " << std::fixed << std::setprecision(6) << t_it_svd << " s" << std::endl;
 
         if (rank == 0) {
