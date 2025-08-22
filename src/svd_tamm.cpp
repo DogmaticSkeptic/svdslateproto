@@ -100,41 +100,69 @@ int main(int argc, char** argv) {
     int provided = 0;
     MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
     tamm::initialize(argc, argv);
-    int world_rank = 0;
+
+    int world_rank = 0, world_size = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    if (argc < 7) {
-        if (world_rank == 0) {
-            std::fprintf(stderr, "usage: %s n_contr n_svd minN maxN step csv_filename\n", argv[0]);
-        }
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-    int n_contr = std::stoi(argv[1]);
-    int n_svd = std::stoi(argv[2]);
-    int64_t minN = std::stoll(argv[3]);
-    int64_t maxN = std::stoll(argv[4]);
-    int64_t step = std::stoll(argv[5]);
-    std::string csv_name = argv[6];
-    tamm::ProcGroup world_pg = tamm::ProcGroup::create_world_coll();
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+    int n_contr = 100;
+    int n_svd = 100;
+    int64_t minN = 128;
+    int64_t maxN = 512;
+    int64_t step = 128;
+    std::string csv_name = "timings.csv";
+
+    if (argc >= 2) n_contr = std::stoi(argv[1]);
+    if (argc >= 3) n_svd = std::stoi(argv[2]);
+    if (argc >= 4) minN = std::stoll(argv[3]);
+    if (argc >= 5) maxN = std::stoll(argv[4]);
+    if (argc >= 6) step = std::stoll(argv[5]);
+    if (argc >= 7) csv_name = std::string(argv[6]);
+
     if (world_rank == 0) {
+        std::cout << "svd_tamm: ranks=" << world_size << std::endl;
+        std::cout << "svd_tamm: config n_contr=" << n_contr << " n_svd=" << n_svd
+                  << " minN=" << minN << " maxN=" << maxN << " step=" << step
+                  << " csv=" << csv_name << std::endl;
+        std::cout << "svd_tamm: initializing CSV" << std::endl;
         std::ofstream ofs(csv_name, std::ios::out | std::ios::trunc);
         ofs << "bond_dim,t_contr,t_svd,t_total\n";
         ofs.close();
     }
+
     MPI_Barrier(MPI_COMM_WORLD);
+
+    tamm::ProcGroup world_pg = tamm::ProcGroup::create_world_coll();
+
     for (int64_t N = minN; N <= maxN; N += step) {
+        if (world_rank == 0) {
+            std::cout << "svd_tamm: N=" << N << " phase=contractions start" << std::endl;
+        }
         double t_contr = time_tamm_contractions(N, n_contr, world_pg);
+        if (world_rank == 0) {
+            std::cout << "svd_tamm: N=" << N << " phase=contractions done time=" << std::fixed << std::setprecision(6) << t_contr << " s" << std::endl;
+            std::cout << "svd_tamm: N=" << N << " phase=svd start" << std::endl;
+        }
         double t_svd = time_slate_svds(N, n_svd, MPI_COMM_WORLD);
         double t_total = t_contr + t_svd;
         if (world_rank == 0) {
+            std::cout << "svd_tamm: N=" << N << " phase=svd done time=" << std::fixed << std::setprecision(6) << t_svd << " s" << std::endl;
+            std::cout << "svd_tamm: N=" << N << " write CSV" << std::endl;
             std::ofstream ofs(csv_name, std::ios::out | std::ios::app);
             ofs << N << ","
                 << std::fixed << std::setprecision(6) << t_contr << ","
                 << std::fixed << std::setprecision(6) << t_svd << ","
                 << std::fixed << std::setprecision(6) << t_total << "\n";
             ofs.close();
+            std::cout << "svd_tamm: N=" << N << " complete total=" << std::fixed << std::setprecision(6) << t_total << " s" << std::endl;
         }
         MPI_Barrier(MPI_COMM_WORLD);
     }
+
+    if (world_rank == 0) {
+        std::cout << "svd_tamm: done" << std::endl;
+    }
+
     tamm::finalize();
     MPI_Finalize();
     return 0;
