@@ -39,41 +39,68 @@ static void fill_local_tiles(slate::Matrix<double>& A) {
 
 static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
+
+    // Each rank works independently in its own subgroup.
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
-    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
+    // CRITICAL CHANGE 1: Use the local memory manager for local work.
+    // This avoids any overhead related to the Global Arrays runtime.
+    tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::local};
     tamm::Scheduler sch{ec};
+
+    // Use an atomic counter to get a unique task ID for each process.
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
+
+    // -- Start of Optimized Section --
+
+    // CRITICAL CHANGE 2: Define TiledIndexSpaces and Tensors ONCE, outside the loop.
+    size_t M = static_cast<size_t>(N);
+    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
+    tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
+    tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
+    auto [l, b, r] = bond.labels<3>("all");
+    auto [p1, p2] = phys.labels<2>("all");
+
+    tamm::Tensor<T> A({l, p1, b});
+    tamm::Tensor<T> B({b, p2, r});
+    tamm::Tensor<T> C({l, p1, p2, r});
+
+    A.set_dense();
+    B.set_dense();
+    C.set_dense();
+
+    // CRITICAL CHANGE 3: Allocate tensors ONCE before starting the work loop.
+    sch.allocate(A, B, C).execute();
+
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
+
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
         if (idx >= n_contr) break;
-        size_t M = static_cast<size_t>(N);
-        auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
-        tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
-        tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
-        auto [l, b, r] = bond.labels<3>("all");
-        auto [p1, p2] = phys.labels<2>("all");
-        tamm::Tensor<T> A({l, p1, b});
-        tamm::Tensor<T> B({b, p2, r});
-        tamm::Tensor<T> C({l, p1, p2, r});
-        A.set_dense();
-        B.set_dense();
-        C.set_dense();
-        sch.allocate(A, B, C).execute();
-        sch(A() = T(1.0))(B() = T(1.0))(C() = T(0.0)).execute();
-        sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r)).execute(ec.exhw(), false);
-        sch.deallocate(A, B, C).execute();
+
+        // CRITICAL CHANGE 4: Schedule ONLY the computation inside the loop.
+        // The tensors are reused. No allocation/deallocation overhead here.
+        // We can also batch the initializations and the contraction into one execute call.
+        sch(A() = T(1.0))
+           (B() = T(1.0))
+           (C() = T(0.0))
+           (C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r))
+           .execute(ec.exhw(), false);
     }
+
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
+
+    // CRITICAL CHANGE 5: Deallocate tensors ONCE after all work is done.
+    sch.deallocate(A, B, C).execute();
     ac.deallocate();
+
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
 
