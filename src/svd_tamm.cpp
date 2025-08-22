@@ -183,7 +183,7 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
             itensor::Index l(int(M), "l");
             itensor::Index p1(2, "p1");
             itensor::Index p2(2, "p2");
-            itensor::Index b(int(bt), "b");
+            itensor::Index b(int(M), "b");
             itensor::Index r(int(M), "r");
             itensor::ITensor A(l, p1, b), B(b, p2, r), C(l, p1, p2, r);
             A.fill(1.0);
