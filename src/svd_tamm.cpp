@@ -260,7 +260,7 @@ int main(int argc, char** argv) {
     for (int64_t N = minN; N <= maxN; N += step) {
         if (rank == 0) std::cout << "N " << N << " contractions queue start" << std::endl;
         double t_contr_q = -1.0;
-        if (!stop_contr_queue) t_contr_q = time_tamm_contractions_queue(N, n_contr, world_pg);
+        if (!stop_contr_queue) t_contr_q = 0;//time_tamm_contractions_queue(N, n_contr, world_pg);
         int exceeded = 0;
         if (t_contr_q > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " contractions queue done " << std::fixed << std::setprecision(6) << t_contr_q << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " contractions batch start" << std::endl;
         double t_contr_b = -1.0;
-        if (!stop_contr_batch) t_contr_b = time_tamm_contractions_batch(N, n_contr, world_pg);
+        if (!stop_contr_batch) t_contr_b = 0;//time_tamm_contractions_batch(N, n_contr, world_pg);
         exceeded = 0;
         if (t_contr_b > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
         double t_slate = -1.0;
-        if (!stop_svd_slate) t_slate = 0;//time_slate_svds(N, n_svd, world_pg);
+        if (!stop_svd_slate) t_slate = time_slate_svds(N, n_svd, world_pg);
         exceeded = 0;
         if (t_slate > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
