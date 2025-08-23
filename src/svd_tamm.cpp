@@ -71,7 +71,7 @@ static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGro
         sch(C() = T(0.0));
         sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r));
         sch.deallocate(A, B, C);
-        sch.execute(ec.exhw(), false);
+        sch.execute(tamm::ExecutionHW::GPU, false);
     }
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
