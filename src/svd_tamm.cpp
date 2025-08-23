@@ -86,7 +86,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     tamm::ExecutionContext ec{world_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(std::min(M, size_t(164)));
+    auto bt = static_cast<tamm::Tile>(M);
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto [l, b, r] = bond.labels<3>("all");
@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " contractions queue done " << std::fixed << std::setprecision(6) << t_contr_q << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " contractions batch start" << std::endl;
         double t_contr_b = -1.0;
-        if (!stop_contr_batch) t_contr_b = 0;//time_tamm_contractions_batch(N, n_contr, world_pg);
+        if (!stop_contr_batch) t_contr_b = time_tamm_contractions_batch(N, n_contr, world_pg);
         exceeded = 0;
         if (t_contr_b > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " svd eigen host done " << std::fixed << std::setprecision(6) << t_eigen << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " itensor contractions host start" << std::endl;
         double t_it_contr = -1.0;
-        if (!stop_contr_itensor) t_it_contr = time_itensor_contractions_host(N, n_contr, world_pg);
+        if (!stop_contr_itensor) t_it_contr = 0;//time_itensor_contractions_host(N, n_contr, world_pg);
         exceeded = 0;
         if (t_it_contr > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
