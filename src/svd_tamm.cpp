@@ -86,7 +86,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     tamm::ExecutionContext ec{world_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(N % 4);
+    auto bt = static_cast<tamm::Tile>(164);
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto [l, b, r] = bond.labels<3>("all");
