@@ -126,7 +126,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
 
-static double time_slate_svds_random(int64_t n, int n_svd, tamm::ProcGroup world_pg) {
+static double time_slate_svds(int64_t n, int n_svd, tamm::ProcGroup world_pg) {
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
     world_pg.barrier()
