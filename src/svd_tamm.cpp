@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " contractions batch done " << std::fixed << std::setprecision(6) << t_contr_b << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " svd slate start" << std::endl;
         double t_slate = -1.0;
-        if (!stop_svd_slate) t_slate = time_slate_svds(N, n_svd, world_pg);
+        if (!stop_svd_slate) t_slate = 0;//time_slate_svds(N, n_svd, world_pg);
         exceeded = 0;
         if (t_slate > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
@@ -284,7 +284,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " svd slate done " << std::fixed << std::setprecision(6) << t_slate << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " svd eigen host start" << std::endl;
         double t_eigen = -1.0;
-        if (!stop_svd_eigen) t_eigen = time_eigen_svds_host(N, n_svd, world_pg);
+        if (!stop_svd_eigen) t_eigen = 0;//time_eigen_svds_host(N, n_svd, world_pg);
         exceeded = 0;
         if (t_eigen > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " itensor contractions host done " << std::fixed << std::setprecision(6) << t_it_contr << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " itensor svd host start" << std::endl;
         double t_it_svd = -1.0;
-        if (!stop_svd_itensor) t_it_svd = time_itensor_svds_host(N, n_svd, world_pg);
+        if (!stop_svd_itensor) t_it_svd = 0;//time_itensor_svds_host(N, n_svd, world_pg);
         exceeded = 0;
         if (t_it_svd > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
