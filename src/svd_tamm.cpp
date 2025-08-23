@@ -133,7 +133,7 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     const int64_t n = 2 * N;
-    const int64_t nb = 256;
+    const int64_t nb = 512;
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
