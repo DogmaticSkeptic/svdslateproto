@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <iostream>
 #include <chrono>
+#include <cstring>
+#include <random>
 
 using std::int64_t;
 
@@ -124,33 +126,67 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
     return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
 }
 
-static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
+static double time_slate_svds_random(int64_t n, int n_svd, tamm::ProcGroup world_pg) {
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
-    world_pg.barrier();
-    double t0 = 0.0, t1 = 0.0;
-    if (world_pg.rank().value() == 0) {
-        t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    world_pg.barrier()
+    const int64_t nb = 256;
+    tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1)
+    slate::Matrix<double> A0(n, n, nb, 1, 1, self_pg.comm())
+    A0.insertLocalTiles()
+    std::mt19937_64 gen(42)
+    std::uniform_real_distribution<double> dist(-1.0, 1.0)
+    for (int64_t j = 0; j < A0.nt(); ++j) {
+        for (int64_t i = 0; i < A0.mt(); ++i) {
+            if (!A0.tileIsLocal(i, j)) continue;
+            A0.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor)
+            auto T = A0(i, j)
+            double* a = T.data()
+            int64_t lda = T.stride()
+            int64_t mb = T.mb()
+            int64_t nbj = T.nb()
+            for (int64_t jj = 0; jj < nbj; ++jj) {
+                for (int64_t ii = 0; ii < mb; ++ii) {
+                    a[ii + lda * jj] = dist(gen)
+                }
+            }
+        }
     }
-    const int64_t n = 2 * N;
-    const int64_t nb = 192;
-    tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
+    world_pg.barrier()
+    double total_svd_time = 0.0
     while (true) {
-        int64_t idx = ac.fetch_add(0, 1);
-        if (idx >= n_svd) break;
-        slate::Matrix<double> A(n, n, nb, 1, 1, self_pg.comm());
-        A.insertLocalTiles();
-        fill_local_tiles(A);
-        std::vector<double> S(static_cast<size_t>(n));
-        slate::Matrix<double> U, VT;
-        slate::svd(A, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
+        int64_t idx = ac.fetch_add(0, 1)
+        if (idx >= n_svd) break
+        slate::Matrix<double> A(n, n, nb, 1, 1, self_pg.comm())
+        A.insertLocalTiles()
+        for (int64_t j = 0; j < A.nt(); ++j) {
+            for (int64_t i = 0; i < A.mt(); ++i) {
+                if (!A.tileIsLocal(i, j)) continue;
+                A0.tileGetForReading(i, j, slate::LayoutConvert::ColMajor)
+                A.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor)
+                auto Tsrc = A0(i, j)
+                auto Tdst = A(i, j)
+                const double* src = Tsrc.data()
+                double* dst = Tdst.data()
+                int64_t lda_src = Tsrc.stride()
+                int64_t lda_dst = Tdst.stride()
+                int64_t mb = Tsrc.mb()
+                int64_t nbj = Tsrc.nb()
+                for (int64_t jj = 0; jj < nbj; ++jj) {
+                    std::memcpy(dst + lda_dst * jj, src + lda_src * jj, sizeof(double) * mb)
+                }
+            }
+        }
+        std::vector<double> S(static_cast<size_t>(n))
+        slate::Matrix<double> U, VT
+        auto t0 = std::chrono::high_resolution_clock::now()
+        slate::svd(A, S, U, VT, {{slate::Option::Target, slate::Target::Devices}})
+        auto t1 = std::chrono::high_resolution_clock::now()
+        total_svd_time += std::chrono::duration<double>(t1 - t0).count()
     }
-    world_pg.barrier();
-    if (world_pg.rank().value() == 0) {
-        t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-    }
-    ac.deallocate();
-    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+    world_pg.barrier()
+    ac.deallocate()
+    return (world_pg.rank().value() == 0 ? total_svd_time : 0.0)
 }
 
 static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
