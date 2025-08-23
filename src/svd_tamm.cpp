@@ -1,3 +1,4 @@
+#include <mpi.h>
 #include <tamm/tamm.hpp>
 #include <slate/slate.hh>
 #ifdef I
