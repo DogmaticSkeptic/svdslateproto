@@ -1,5 +1,6 @@
 #include <tamm/tamm.hpp>
 #include <slate/slate.hh>
+#include <itensor/all.h>
 #include <vector>
 #include <string>
 #include <random>
@@ -21,7 +22,7 @@ struct Args {
     i64 tilesz = 256;
 };
 
-struct TimeBreakdown {
+struct TammTB {
     double t_allocate = 0.0;
     double t_fill_random = 0.0;
     double t_gate_fill = 0.0;
@@ -34,6 +35,15 @@ struct TimeBreakdown {
     double t_truncate = 0.0;
     double t_fill_uvt = 0.0;
     double t_deallocate = 0.0;
+    double t_total = 0.0;
+};
+
+struct ITensorTB {
+    double t_build = 0.0;
+    double t_contract_ab = 0.0;
+    double t_apply_gate = 0.0;
+    double t_svd = 0.0;
+    double t_reconstruct = 0.0;
     double t_total = 0.0;
 };
 
@@ -207,10 +217,9 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
 }
 
 template<typename T>
-static TimeBreakdown two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
-    TimeBreakdown tb;
+static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
+    TammTB tb;
     double t0 = now_s();
-
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     tamm::Tile bt = static_cast<tamm::Tile>(D);
@@ -223,7 +232,6 @@ static TimeBreakdown two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::str
     auto p2 = phys.label("all");
     auto q1 = phys.label("all");
     auto q2 = phys.label("all");
-
     tamm::Tensor<T> A({bond, phys, bond});
     tamm::Tensor<T> B({bond, phys, bond});
     tamm::Tensor<T> Th({bond, phys, phys, bond});
@@ -232,74 +240,58 @@ static TimeBreakdown two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::str
     B.set_dense();
     Th.set_dense();
     Gt.set_dense();
-
     double ta0 = now_s();
     sch.allocate(A, B, Th, Gt).execute();
     tb.t_allocate += now_s() - ta0;
-
     double tf0 = now_s();
     fill_random(A, seed, 1);
     fill_random(B, seed, 2);
     tb.t_fill_random += now_s() - tf0;
-
     T G16[16];
     make_gate<T>(gate_kind, G16);
     double tg0 = now_s();
     fill_gate_tensor(Gt, G16);
     tb.t_gate_fill += now_s() - tg0;
-
     double tc1_0 = now_s();
     sch(Th(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r)).execute();
     tb.t_contract_ab += now_s() - tc1_0;
-
     tamm::Tensor<T> Th2({bond, phys, phys, bond});
     Th2.set_dense();
     double ta1 = now_s();
     sch.allocate(Th2).execute();
     tb.t_allocate += now_s() - ta1;
-
     double tc2_0 = now_s();
     sch(Th2(l, q1, q2, r) = Th(l, p1, p2, r) * Gt(p1, p2, q1, q2)).execute();
     tb.t_apply_gate += now_s() - tc2_0;
-
     i64 m = 2 * D;
     i64 n = 2 * D;
     std::vector<T> M(static_cast<size_t>(m) * static_cast<size_t>(n));
-
     double tpack0 = now_s();
     pack_theta_to_matrix(Th2, D, M);
     tb.t_pack += now_s() - tpack0;
-
     slate::Matrix<T> Mmat(m, n, tilesz, 1, 1, self_pg.comm());
     Mmat.insertLocalTiles();
-
     double tci0 = now_s();
     slate_copy_in(Mmat, M);
     tb.t_copy_in += now_s() - tci0;
-
     i64 k = std::min<i64>(m, n);
     std::vector<T> S(static_cast<size_t>(k));
     slate::Matrix<T> U(m, k, tilesz, 1, 1, self_pg.comm());
     slate::Matrix<T> VT(k, n, tilesz, 1, 1, self_pg.comm());
     U.insertLocalTiles();
     VT.insertLocalTiles();
-
     double tsvd0 = now_s();
     slate::svd(Mmat, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
     tb.t_svd += now_s() - tsvd0;
-
     std::vector<T> Ubuf(static_cast<size_t>(m) * static_cast<size_t>(k));
     std::vector<T> VTbuf(static_cast<size_t>(k) * static_cast<size_t>(n));
-
     double tco0 = now_s();
     slate_copy_out(U, Ubuf);
     slate_copy_out(VT, VTbuf);
     tb.t_copy_out += now_s() - tco0;
-
     i64 chi = std::min<i64>(k, Dmax);
     std::vector<T> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
     std::vector<T> VTc(static_cast<size_t>(chi) * static_cast<size_t>(n));
-
     double ttr0 = now_s();
     for(i64 i = 0; i < m; i++) {
         for(i64 j = 0; j < chi; j++) {
@@ -316,26 +308,84 @@ static TimeBreakdown two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::str
     std::vector<T> Sx(static_cast<size_t>(chi));
     for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S[static_cast<size_t>(i)];
     tb.t_truncate += now_s() - ttr0;
-
     tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi)}, static_cast<tamm::Tile>(chi)};
     auto s = chi_tis.label("all");
     tamm::Tensor<T> A2({bond, phys, chi_tis});
     tamm::Tensor<T> B2({chi_tis, phys, bond});
     A2.set_dense();
     B2.set_dense();
-
     double ta2 = now_s();
     sch.allocate(A2, B2).execute();
     tb.t_allocate += now_s() - ta2;
-
     double tfuv0 = now_s();
     fill_from_u_s_vt(A2, B2, D, chi, Uc, Sx, VTc);
     tb.t_fill_uvt += now_s() - tfuv0;
-
     double td0 = now_s();
     sch.deallocate(A, B, Th, Th2, Gt, A2, B2).execute();
     tb.t_deallocate += now_s() - td0;
+    tb.t_total += now_s() - t0;
+    return tb;
+}
 
+static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed) {
+    using namespace itensor;
+    ITensorTB tb;
+    double t0 = now_s();
+    Index l("l", int(D));
+    Index b("b", int(D));
+    Index r("r", int(D));
+    Index p1("p1", 2);
+    Index p2("p2", 2);
+    Index q1("q1", 2);
+    Index q2("q2", 2);
+    std::mt19937_64 gen(seed);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    ITensor A(l, p1, b);
+    ITensor B(b, p2, r);
+    double tbuild0 = now_s();
+    for(int il = 1; il <= int(D); il++) {
+        for(int ip = 1; ip <= 2; ip++) {
+            for(int ib = 1; ib <= int(D); ib++) {
+                A.set(l=il, p1=ip, b=ib, dist(gen));
+            }
+        }
+    }
+    for(int ib = 1; ib <= int(D); ib++) {
+        for(int ip = 1; ip <= 2; ip++) {
+            for(int ir = 1; ir <= int(D); ir++) {
+                B.set(b=ib, p2=ip, r=ir, dist(gen));
+            }
+        }
+    }
+    ITensor G(p1, p2, q1, q2);
+    double G16[16];
+    make_gate<double>(gate_kind, G16);
+    int idx = 0;
+    for(int a = 1; a <= 2; a++) {
+        for(int b2 = 1; b2 <= 2; b2++) {
+            for(int c = 1; c <= 2; c++) {
+                for(int d = 1; d <= 2; d++) {
+                    G.set(p1=a, p2=b2, q1=c, q2=d, G16[idx]);
+                    idx++;
+                }
+            }
+        }
+    }
+    tb.t_build += now_s() - tbuild0;
+    double tc1 = now_s();
+    ITensor Th = A * B;
+    tb.t_contract_ab += now_s() - tc1;
+    double tg = now_s();
+    ITensor Th2 = Th * G;
+    tb.t_apply_gate += now_s() - tg;
+    double tsvd = now_s();
+    auto [U, S, V] = svd(Th2, IndexSet(l, q1), IndexSet(q2, r), Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
+    tb.t_svd += now_s() - tsvd;
+    double trc = now_s();
+    ITensor SV = S * V;
+    volatile double sink = elt(SV, 1, 1, 1);
+    (void)sink;
+    tb.t_reconstruct += now_s() - trc;
     tb.t_total += now_s() - t0;
     return tb;
 }
@@ -353,10 +403,10 @@ static void print_input_and_global(const Args& args, int rank, int world_size, d
     }
 }
 
-static void print_rank_breakdown(int rank, const TimeBreakdown& tb, long long tasks) {
+static void print_rank_breakdown_tamm(int rank, const TammTB& tb, long long tasks) {
     std::cout << "rank " << rank
               << " tasks " << tasks
-              << " total " << std::fixed << std::setprecision(6) << tb.t_total
+              << " TAMM total " << std::fixed << std::setprecision(6) << tb.t_total
               << "s allocate " << tb.t_allocate
               << "s fill_random " << tb.t_fill_random
               << "s gate_fill " << tb.t_gate_fill
@@ -372,6 +422,18 @@ static void print_rank_breakdown(int rank, const TimeBreakdown& tb, long long ta
               << "s" << std::endl;
 }
 
+static void print_rank_breakdown_itensor(int rank, const ITensorTB& tb, long long tasks) {
+    std::cout << "rank " << rank
+              << " tasks " << tasks
+              << " ITensor total " << std::fixed << std::setprecision(6) << tb.t_total
+              << "s build " << tb.t_build
+              << "s contract_ab " << tb.t_contract_ab
+              << "s apply_gate " << tb.t_apply_gate
+              << "s svd " << tb.t_svd
+              << "s reconstruct " << tb.t_reconstruct
+              << "s" << std::endl;
+}
+
 int main(int argc, char** argv) {
     tamm::initialize(argc, argv);
     Args args = parse_args(argc, argv);
@@ -379,44 +441,47 @@ int main(int argc, char** argv) {
     auto self_pg = tamm::ProcGroup::create_self();
     int r = world_pg.rank().value();
     int p = world_pg.size().value();
-
     world_pg.barrier();
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
-
     double t0 = now_s();
-    TimeBreakdown acc;
+    TammTB acc_tamm;
+    ITensorTB acc_it;
     long long tasks_done = 0;
-
     while(true) {
         long long idx = ac.fetch_add(0, 1);
         if(idx >= args.gates) break;
-        TimeBreakdown tb = two_site_update<double>(args.bond_dim, args.max_bond_dim, args.tilesz, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
-        acc.t_allocate += tb.t_allocate;
-        acc.t_fill_random += tb.t_fill_random;
-        acc.t_gate_fill += tb.t_gate_fill;
-        acc.t_contract_ab += tb.t_contract_ab;
-        acc.t_apply_gate += tb.t_apply_gate;
-        acc.t_pack += tb.t_pack;
-        acc.t_copy_in += tb.t_copy_in;
-        acc.t_svd += tb.t_svd;
-        acc.t_copy_out += tb.t_copy_out;
-        acc.t_truncate += tb.t_truncate;
-        acc.t_fill_uvt += tb.t_fill_uvt;
-        acc.t_deallocate += tb.t_deallocate;
-        acc.t_total += tb.t_total;
+        TammTB tb1 = two_site_update_tamm<double>(args.bond_dim, args.max_bond_dim, args.tilesz, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
+        ITensorTB tb2 = two_site_update_itensor(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx));
+        acc_tamm.t_allocate += tb1.t_allocate;
+        acc_tamm.t_fill_random += tb1.t_fill_random;
+        acc_tamm.t_gate_fill += tb1.t_gate_fill;
+        acc_tamm.t_contract_ab += tb1.t_contract_ab;
+        acc_tamm.t_apply_gate += tb1.t_apply_gate;
+        acc_tamm.t_pack += tb1.t_pack;
+        acc_tamm.t_copy_in += tb1.t_copy_in;
+        acc_tamm.t_svd += tb1.t_svd;
+        acc_tamm.t_copy_out += tb1.t_copy_out;
+        acc_tamm.t_truncate += tb1.t_truncate;
+        acc_tamm.t_fill_uvt += tb1.t_fill_uvt;
+        acc_tamm.t_deallocate += tb1.t_deallocate;
+        acc_tamm.t_total += tb1.t_total;
+        acc_it.t_build += tb2.t_build;
+        acc_it.t_contract_ab += tb2.t_contract_ab;
+        acc_it.t_apply_gate += tb2.t_apply_gate;
+        acc_it.t_svd += tb2.t_svd;
+        acc_it.t_reconstruct += tb2.t_reconstruct;
+        acc_it.t_total += tb2.t_total;
         tasks_done += 1;
     }
-
     world_pg.barrier();
     double t1 = now_s();
     double dt = t1 - t0;
     double mx = 0.0;
     world_pg.allreduce(&dt, &mx, 1, tamm::ReduceOp::max);
-
     print_input_and_global(args, r, p, mx);
-    print_rank_breakdown(r, acc, tasks_done);
-
+    print_rank_breakdown_tamm(r, acc_tamm, tasks_done);
+    print_rank_breakdown_itensor(r, acc_it, tasks_done);
     ac.deallocate();
     tamm::finalize();
     return 0;
