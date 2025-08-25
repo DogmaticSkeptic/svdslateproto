@@ -95,6 +95,8 @@ get_target_property(_cudart CUDA::cudart IMPORTED_LOCATION)
 get_filename_component(_cuda_libdir ${_cudart} DIRECTORY)
 list(APPEND CMAKE_BUILD_RPATH ${_cuda_libdir})
 
+set(MKL_FLAGS "-qmkl=cluster")
+
 target_link_libraries(svd_slate
     -Wl,--start-group
     ${SLATE_LIB}
