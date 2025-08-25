@@ -56,8 +56,8 @@ void tamm_to_slate(const Tensor<T>& tamm_tensor, slate::Matrix<T>& slate_matrix)
                 auto tile = slate_matrix(i, j);
                 T* tile_buf = tile.data();
                 
-                int64_t global_i = i * slate_matrix.mb();
-                int64_t global_j = j * slate_matrix.nb();
+                int64_t global_i = i * slate_matrix.m();
+                int64_t global_j = j * slate_matrix.n();
                 
                 std::vector<T> temp_row_buffer(tile.nb());
                 for(int64_t row_idx = 0; row_idx < tile.mb(); ++row_idx) {
@@ -94,8 +94,8 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
                 auto tile = slate_matrix(i, j);
                 const T* tile_buf = tile.data();
                 
-                int64_t global_i = i * slate_matrix.mb();
-                int64_t global_j = j * slate_matrix.nb();
+                int64_t global_i = i * slate_matrix.m();
+                int64_t global_j = j * slate_matrix.n();
                 
                 std::vector<T> temp_row_buffer(tile.nb());
                 
