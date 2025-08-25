@@ -85,6 +85,7 @@ add_executable(svd_slate src/svd_slate.cpp)
 add_executable(svd_slate_only src/svd_slate_only.cpp)
 add_executable(svd_tamm src/svd_tamm.cpp)
 add_executable(rank_scale src/rank_scale.cpp)
+add_executable(mps_test src/mps_test.cpp)
 
 target_link_options(svd_slate PRIVATE
     -Wl,--no-as-needed
@@ -159,3 +160,20 @@ target_link_libraries(rank_scale
 )
 
 target_compile_definitions(rank_scale PUBLIC TAMM_ENABLED)
+
+target_link_libraries(mps_test
+    -Wl,--start-group
+    ${SLATE_LIB}
+    ${LAPACKPP_LIB}
+    ${BLASPP_LIB}
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
+    CUDA::cusolver
+    -Wl,--end-group
+    OpenMP::OpenMP_CXX
+    tamm::tamm
+    itensor
+)
+
+target_compile_definitions(mps_test PUBLIC TAMM_ENABLED)
