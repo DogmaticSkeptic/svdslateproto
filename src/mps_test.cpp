@@ -73,25 +73,16 @@ static void fill_random(tamm::Tensor<T>& X, unsigned long long seed, i64 salt, c
 
 template<typename T>
 static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16, const char* name, int rank) {
-    rprint(rank, std::string("fill_gate_tensor enter tensor=") + name);
     auto f = [&](const tamm::IndexVector& bid, tamm::span<T> buf) {
-        auto dims = G.block_dims(bid);
-        auto offs = G.block_offsets(bid);
-        rprint(rank, std::string("fill_gate_tensor block tensor=") + name +
-                      " off=[" + std::to_string(offs[0]) + "," + std::to_string(offs[1]) + "," + std::to_string(offs[2]) + "," + std::to_string(offs[3]) + "]" +
-                      " dim=[" + std::to_string(dims[0]) + "," + std::to_string(dims[1]) + "," + std::to_string(dims[2]) + "," + std::to_string(dims[3]) + "]" +
-                      " size=" + std::to_string(buf.size()));
-        for(size_t i = 0; i < buf.size(); i++) buf[i] = T(0);
-        for(int p1 = 0; p1 < 2; p1++)
-        for(int p2 = 0; p2 < 2; p2++)
-        for(int q1 = 0; q1 < 2; q1++)
-        for(int q2 = 0; q2 < 2; q2++) {
-            int r = p1 * 8 + p2 * 4 + q1 * 2 + q2;
-            buf[static_cast<size_t>(r)] = G16[r];
-        }
+        auto offs = G.block_offsets(bid);  // [p1o, p2o, q1o, q2o], each 0 or 1
+        int p1 = static_cast<int>(offs[0]);
+        int p2 = static_cast<int>(offs[1]);
+        int q1 = static_cast<int>(offs[2]);
+        int q2 = static_cast<int>(offs[3]);
+        int r = p1 * 8 + p2 * 4 + q1 * 2 + q2;
+        buf[0] = G16[r];
     };
     tamm::update_tensor(G, f);
-    rprint(rank, std::string("fill_gate_tensor leave tensor=") + name);
 }
 
 template<typename T>
