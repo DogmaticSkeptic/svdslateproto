@@ -1,6 +1,6 @@
 #include <tamm/tamm.hpp>
 #include <itensor/all.h>
-#include <lapack.hh>
+#include <lapacke.h>
 #include <vector>
 #include <string>
 #include <random>
@@ -179,7 +179,7 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto l = bond.label("all");
     auto b = bond.label("all");
-    auto r = bond.label("all");
+    auto rr = bond.label("all");
     auto p1 = phys.label("all");
     auto p2 = phys.label("all");
     auto q1 = phys.label("all");
@@ -205,7 +205,7 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     fill_gate_tensor(Gt, G16);
     tb.t_gate_fill += now_s() - tg0;
     double tc1_0 = now_s();
-    sch(Th(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r)).execute();
+    sch(Th(l, p1, p2, rr) = A(l, p1, b) * B(b, p2, rr)).execute();
     tb.t_contract_ab += now_s() - tc1_0;
     tamm::Tensor<double> Th2({bond, phys, phys, bond});
     Th2.set_dense();
@@ -213,7 +213,7 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     sch.allocate(Th2).execute();
     tb.t_allocate += now_s() - ta1;
     double tc2_0 = now_s();
-    sch(Th2(l, q1, q2, r) = Th(l, p1, p2, r) * Gt(p1, p2, q1, q2)).execute();
+    sch(Th2(l, q1, q2, rr) = Th(l, p1, p2, rr) * Gt(p1, p2, q1, q2)).execute();
     tb.t_apply_gate += now_s() - tc2_0;
     i64 m = 2 * D;
     i64 n = 2 * D;
@@ -225,9 +225,8 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     std::vector<double> S(static_cast<size_t>(k));
     std::vector<double> U(static_cast<size_t>(m) * static_cast<size_t>(k));
     std::vector<double> VT(static_cast<size_t>(k) * static_cast<size_t>(n));
-    lapack::Job job = lapack::Job::Some;
     double tsvd0 = now_s();
-    lapack::gesdd(job, m, n, Acol.data(), m, S.data(), U.data(), m, VT.data(), k);
+    LAPACKE_dgesdd(LAPACK_COL_MAJOR, 'S', (lapack_int)m, (lapack_int)n, Acol.data(), (lapack_int)m, S.data(), U.data(), (lapack_int)m, VT.data(), (lapack_int)k);
     tb.t_svd += now_s() - tsvd0;
     i64 chi = std::min<i64>(k, Dmax);
     std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
@@ -272,25 +271,25 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     ITensorTB tb;
     double t0 = now_s();
     Index l(int(D), "l");
-    Index b(int(D), "b");
-    Index r(int(D), "r");
+    Index bb(int(D), "b");
+    Index rr(int(D), "r");
     Index p1(2, "p1");
     Index p2(2, "p2");
     Index q1(2, "q1");
     Index q2(2, "q2");
     std::mt19937_64 gen(seed);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
-    ITensor A(l, p1, b);
-    ITensor B(b, p2, r);
+    ITensor A(l, p1, bb);
+    ITensor B(bb, p2, rr);
     double tbuild0 = now_s();
     for(int il = 1; il <= int(D); ++il)
         for(int ip = 1; ip <= 2; ++ip)
             for(int ib = 1; ib <= int(D); ++ib)
-                A.set(l=il, p1=ip, b=ib, dist(gen));
+                A.set(l=il, p1=ip, bb=ib, dist(gen));
     for(int ib = 1; ib <= int(D); ++ib)
         for(int ip = 1; ip <= 2; ++ip)
             for(int ir = 1; ir <= int(D); ++ir)
-                B.set(b=ib, p2=ip, r=ir, dist(gen));
+                B.set(bb=ib, p2=ip, rr=ir, dist(gen));
     ITensor G(p1, p2, q1, q2);
     double G16[16];
     make_gate<double>(gate_kind, G16);
@@ -308,13 +307,10 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     ITensor Th2 = Th * G;
     tb.t_apply_gate += now_s() - tg;
     double tsvd = now_s();
-    auto r = svd(Th2,
-                 IndexSet(l, q1),
-                 IndexSet(q2, r),
-                 itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
-    ITensor U = std::get<0>(r);
-    ITensor S = std::get<1>(r);
-    ITensor V = std::get<2>(r);
+    auto [U, S, V] = svd(Th2,
+                         IndexSet(l, q1),
+                         IndexSet(q2, rr),
+                         itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
     tb.t_svd += now_s() - tsvd;
     double trc = now_s();
     ITensor SV = S * V;
