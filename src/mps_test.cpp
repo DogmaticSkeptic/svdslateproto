@@ -1,22 +1,32 @@
 #include <tamm/tamm.hpp>
 #include <slate/slate.hh>
-#include <blacspp/grid.hpp> // <--- FIX: Added missing include
 #include <chrono>
 #include <iostream>
 #include <vector>
 #include <numeric>
+#include <cmath>
+#include <cstring>
 
 #ifdef I
 #undef I
 #endif
 #include <Eigen/Dense>
 
+// --- C BINDINGS for BLACS library ---
+extern "C" {
+    void Cblacs_get(int, int, int*);
+    void Cblacs_gridinit(int*, const char*, int, int);
+    void Cblacs_gridinfo(int, int*, int*, int*, int*);
+    void Cblacs_gridexit(int);
+}
+
 using namespace tamm;
 using T = double;
 
 /**
  * @brief Computes the number of rows or columns a process owns for a
- *        ScaLAPACK-style block-cyclic distribution.
+ *        ScaLAPACK-style block-cyclic distribution. This is a standard utility
+ *        needed for wrapping raw buffers for SLATE/ScaLAPACK.
  */
 inline int64_t numroc(int64_t n, int64_t nb, int iproc, int isrc, int64_t nprocs) {
     int64_t num_blocks = n / nb;
@@ -34,18 +44,20 @@ inline int64_t numroc(int64_t n, int64_t nb, int iproc, int isrc, int64_t nprocs
 
 /**
  * @brief Efficiently redistributes a 2D TAMM dense tensor to a SLATE BlockCyclic matrix.
+ * 
+ * @param tamm_tensor The source TAMM tensor (must be dense and 2D).
+ * @param slate_matrix The destination SLATE matrix (must be pre-created with the correct dimensions).
  */
 void tamm_to_slate(const Tensor<T>& tamm_tensor, slate::Matrix<T>& slate_matrix) {
     EXPECTS(tamm_tensor.num_modes() == 2);
     EXPECTS(tamm_tensor.kind() == TensorBase::TensorKind::dense);
 
     auto ec = tamm_tensor.execution_context();
-    // --- FIX: Create a copy, not a reference, to the temporary pg object ---
-    auto pg = ec->pg();
+    auto pg = ec->pg(); // Returns a copy, which is fine here
     pg.barrier();
 
-    // --- FIX: Assumes you have made ga_handle() a const method in tamm/tensor.hpp ---
-    int ga_handle = tamm_tensor.ga_handle();
+    // Use const_cast if ga_handle() is not const in your TAMM version
+    int ga_handle = const_cast<Tensor<T>&>(tamm_tensor).ga_handle();
 
     for (int64_t j = 0; j < slate_matrix.nt(); ++j) {
         for (int64_t i = 0; i < slate_matrix.mt(); ++i) {
@@ -53,7 +65,7 @@ void tamm_to_slate(const Tensor<T>& tamm_tensor, slate::Matrix<T>& slate_matrix)
                 slate_matrix.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor);
                 auto tile = slate_matrix(i, j);
                 T* tile_buf = tile.data();
-                // --- FIX: Use the correct API for block sizes ---
+                
                 int64_t global_i = i * slate_matrix.mb();
                 int64_t global_j = j * slate_matrix.nb();
                 
@@ -80,7 +92,6 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
     EXPECTS(tamm_tensor.kind() == TensorBase::TensorKind::dense);
 
     auto ec = tamm_tensor.execution_context();
-    // --- FIX: Create a copy, not a reference ---
     auto pg = ec->pg();
     pg.barrier();
 
@@ -92,7 +103,7 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
                 slate_matrix.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
                 auto tile = slate_matrix(i, j);
                 const T* tile_buf = tile.data();
-                // --- FIX: Use the correct API for block sizes ---
+                
                 int64_t global_i = i * slate_matrix.mb();
                 int64_t global_j = j * slate_matrix.nb();
                 
@@ -102,7 +113,6 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
                     for (int64_t col_idx = 0; col_idx < tile.nb(); ++col_idx) {
                         temp_row_buffer[col_idx] = tile_buf[row_idx + col_idx * tile.stride()];
                     }
-
                     int64_t put_lo[] = {global_i + row_idx, global_j};
                     int64_t put_hi[] = {global_i + row_idx, global_j + tile.nb() - 1};
                     NGA_Put64(ga_handle, put_lo, put_hi, temp_row_buffer.data(), nullptr);
@@ -112,6 +122,7 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
     }
     pg.barrier();
 }
+
 
 static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgroups, tamm::ProcGroup world_pg) {
     tamm::AtomicCounterGA ac{world_pg, 1};
@@ -129,7 +140,11 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
     int ranks_per_subgroup = world_size / n_subgroups;
     tamm::ProcGroup subgroup_pg = tamm::ProcGroup::create_subgroups(world_pg, ranks_per_subgroup);
 
-    if (!subgroup_pg.is_valid()) { ac.deallocate(); return 0.0; }
+    if (!subgroup_pg.is_valid()) {
+        ac.deallocate();
+        subgroup_pg.destroy_coll();
+        return 0.0;
+    }
 
     tamm::ExecutionContext ec{subgroup_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
@@ -138,8 +153,12 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
     int npc_sub = ranks_per_subgroup / npr_sub;
     while(npr_sub * npc_sub != ranks_per_subgroup) { npr_sub--; npc_sub = ranks_per_subgroup / npr_sub; }
     
-    // --- FIX: Added blacspp namespace ---
-    blacspp::Grid grid(subgroup_pg.comm(), npr_sub, npc_sub);
+    int blacs_context;
+    char order = 'R';
+    Cblacs_get(-1, 0, &blacs_context);
+    Cblacs_gridinit(&blacs_context, &order, npr_sub, npc_sub);
+    int my_prow, my_pcol;
+    Cblacs_gridinfo(blacs_context, &npr_sub, &npc_sub, &my_prow, &my_pcol);
 
     const size_t M = static_cast<size_t>(N);
     const tamm::Tile tile_size = static_cast<tamm::Tile>(std::min((size_t)128, M));
@@ -165,14 +184,13 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
         sch(Theta(l, p1, p2, r) = M1(l, p1, b) * M2(b, p2, r));
         sch(Gate() = 0.0).execute();
         
-        // --- FIX: Replace conditional set with manual put for CNOT gate ---
         if (ec.pg().rank() == 0) {
             Gate.put({0,0,0,0}, {1.0}); // |00> -> |00>
             Gate.put({0,1,0,1}, {1.0}); // |01> -> |01>
             Gate.put({1,1,1,0}, {1.0}); // |10> -> |11>
             Gate.put({1,0,1,1}, {1.0}); // |11> -> |10>
         }
-        ec.pg().barrier(); // Ensure all ranks see the updated gate
+        ec.pg().barrier();
 
         sch(Theta_prime(l, p1_new, p2_new, r) = Gate(p1_new, p2_new, p1, p2) * Theta(l, p1, p2, r));
         sch.execute();
@@ -181,15 +199,15 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
         const int64_t matrix_cols = 2 * N;
         const int64_t nb_slate = 128;
 
-        // --- FIX: Use correct two-step process for to_block_cyclic_tensor ---
         Tensor<T> Theta_prime_bc;
         Theta_prime_bc.set_block_cyclic({npr_sub, npc_sub}, {nb_slate, nb_slate});
         sch.allocate(Theta_prime_bc).execute();
         tamm::to_block_cyclic_tensor(Theta_prime, Theta_prime_bc);
 
-        int64_t local_rows = numroc(matrix_rows, nb_slate, grid.ipr(), 0, npr_sub);
+        int64_t local_rows = numroc(matrix_rows, nb_slate, my_prow, 0, npr_sub);
         slate::Matrix<T> Theta_slate = slate::Matrix<T>::fromScaLAPACK(
-            matrix_rows, matrix_cols, Theta_prime_bc.access_local_buf(), local_rows, nb_slate, npr_sub, npc_sub, subgroup_pg.comm()
+            matrix_rows, matrix_cols, Theta_prime_bc.access_local_buf(), local_rows, nb_slate,
+            blacs_context, npr_sub, npc_sub
         );
 
         std::vector<T> S_vec(std::min(matrix_rows, matrix_cols));
@@ -219,6 +237,7 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
     double local_duration = t1 - t0;
     
     ac.deallocate();
+    Cblacs_gridexit(blacs_context);
     subgroup_pg.destroy_coll();
 
     double max_duration = 0.0;
@@ -229,7 +248,6 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
 
 
 int main(int argc, char** argv) {
-    // Main function remains the same...
     if (argc != 4) {
         std::cerr << "Usage: " << argv[0] << " <bond_dimension> <num_gates> <num_subgroups>" << std::endl;
         return 1;
