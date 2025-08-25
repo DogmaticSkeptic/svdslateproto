@@ -1,6 +1,6 @@
 #include <tamm/tamm.hpp>
 #include <itensor/all.h>
-#include <lapacke.h>
+#include <lapack.hh>
 #include <vector>
 #include <string>
 #include <random>
@@ -225,8 +225,10 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     std::vector<double> S(static_cast<size_t>(k));
     std::vector<double> U(static_cast<size_t>(m) * static_cast<size_t>(k));
     std::vector<double> VT(static_cast<size_t>(k) * static_cast<size_t>(n));
+    lapack::Job job = lapack::Job::SomeVec;
     double tsvd0 = now_s();
-    LAPACKE_dgesdd(LAPACK_COL_MAJOR, 'S', (lapack_int)m, (lapack_int)n, Acol.data(), (lapack_int)m, S.data(), U.data(), (lapack_int)m, VT.data(), (lapack_int)k);
+    int64_t info = lapack::gesdd(job, m, n, Acol.data(), m, S.data(), U.data(), m, VT.data(), k);
+    (void)info;
     tb.t_svd += now_s() - tsvd0;
     i64 chi = std::min<i64>(k, Dmax);
     std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
