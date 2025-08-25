@@ -142,13 +142,17 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
     world_pg.barrier();
+
     const int64_t n = 2 * N;
     const int64_t nb = 256;
-    //tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 8);
+    
+    // This part is correct: each rank works in its own local process group.
     tamm::ProcGroup self_pg = tamm::ProcGroup::create_self();
+    
     slate::Matrix<double> A0(n, n, nb, 1, 1, self_pg.comm());
     A0.insertLocalTiles();
-    std::mt19937_64 gen(42);
+    
+    std::mt19937_64 gen(42 + world_pg.rank().value()); // Seed with rank for variation
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
     for (int64_t j = 0; j < A0.nt(); ++j) {
         for (int64_t i = 0; i < A0.mt(); ++i) {
@@ -166,41 +170,43 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
             }
         }
     }
+
     world_pg.barrier();
-    double total_svd_time = 0.0;
+
+    // --- KEY CHANGE 1: Start timer on ALL ranks ---
+    double t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+
     while (true) {
         int64_t idx = ac.fetch_add(0, 1);
         if (idx >= n_svd) break;
+
         slate::Matrix<double> A(n, n, nb, 1, 1, self_pg.comm());
         A.insertLocalTiles();
-        for (int64_t j = 0; j < A.nt(); ++j) {
-            for (int64_t i = 0; i < A.mt(); ++i) {
-                if (!A.tileIsLocal(i, j)) continue;
-                A0.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
-                A.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor);
-                auto Tsrc = A0(i, j);
-                auto Tdst = A(i, j);
-                const double* src = Tsrc.data();
-                double* dst = Tdst.data();
-                int64_t lda_src = Tsrc.stride();
-                int64_t lda_dst = Tdst.stride();
-                int64_t mb = Tsrc.mb();
-                int64_t nbj = Tsrc.nb();
-                for (int64_t jj = 0; jj < nbj; ++jj) {
-                    std::memcpy(dst + lda_dst * jj, src + lda_src * jj, sizeof(double) * mb);
-                }
-            }
-        }
+        slate::copy(A0, A);
+
         std::vector<double> S(static_cast<size_t>(n));
         slate::Matrix<double> U, VT;
-        auto t0 = std::chrono::high_resolution_clock::now();
+        
+        // This is a local SVD, only contributing to this rank's workload
         slate::svd(A, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
-        auto t1 = std::chrono::high_resolution_clock::now();
-        total_svd_time += std::chrono::duration<double>(t1 - t0).count();
     }
-    world_pg.barrier();
+
+    world_pg.barrier(); // Wait for all ranks to finish their assigned tasks.
+
+    // --- KEY CHANGE 2: Stop timer on ALL ranks ---
+    double t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    double local_duration = t1 - t0;
+    
     ac.deallocate();
-    return (world_pg.rank().value() == 0 ? total_svd_time : 0.0);
+    // --- KEY CHANGE 3: Properly release the local communicator ---
+    self_pg.destroy_coll();
+
+    // --- KEY CHANGE 4: Reduce to find the maximum time taken by any rank ---
+    double max_duration = 0.0;
+    world_pg.allreduce(&local_duration, &max_duration, 1, tamm::ReduceOp::max);
+    
+    // Now, every rank has the correct wall-clock time. Rank 0 can print it.
+    return max_duration; 
 }
 
 static double time_eigen_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
