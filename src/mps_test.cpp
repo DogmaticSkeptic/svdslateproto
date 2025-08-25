@@ -331,6 +331,7 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     using namespace itensor;
     ITensorTB tb;
     double t0 = now_s();
+
     Index l("l", int(D));
     Index b("b", int(D));
     Index r("r", int(D));
@@ -338,54 +339,57 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     Index p2("p2", 2);
     Index q1("q1", 2);
     Index q2("q2", 2);
+
     std::mt19937_64 gen(seed);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
     ITensor A(l, p1, b);
     ITensor B(b, p2, r);
+
     double tbuild0 = now_s();
-    for(int il = 1; il <= int(D); il++) {
-        for(int ip = 1; ip <= 2; ip++) {
-            for(int ib = 1; ib <= int(D); ib++) {
+    for(int il = 1; il <= int(D); il++)
+        for(int ip = 1; ip <= 2; ip++)
+            for(int ib = 1; ib <= int(D); ib++)
                 A.set(l=il, p1=ip, b=ib, dist(gen));
-            }
-        }
-    }
-    for(int ib = 1; ib <= int(D); ib++) {
-        for(int ip = 1; ip <= 2; ip++) {
-            for(int ir = 1; ir <= int(D); ir++) {
+
+    for(int ib = 1; ib <= int(D); ib++)
+        for(int ip = 1; ip <= 2; ip++)
+            for(int ir = 1; ir <= int(D); ir++)
                 B.set(b=ib, p2=ip, r=ir, dist(gen));
-            }
-        }
-    }
+
     ITensor G(p1, p2, q1, q2);
     double G16[16];
     make_gate<double>(gate_kind, G16);
     int idx = 0;
-    for(int a = 1; a <= 2; a++) {
-        for(int b2 = 1; b2 <= 2; b2++) {
-            for(int c = 1; c <= 2; c++) {
-                for(int d = 1; d <= 2; d++) {
-                    G.set(p1=a, p2=b2, q1=c, q2=d, G16[idx]);
-                    idx++;
-                }
-            }
-        }
-    }
+    for(int a = 1; a <= 2; a++)
+        for(int b2 = 1; b2 <= 2; b2++)
+            for(int c = 1; c <= 2; c++)
+                for(int d = 1; d <= 2; d++)
+                    G.set(p1=a, p2=b2, q1=c, q2=d, G16[idx++]);
+
     tb.t_build += now_s() - tbuild0;
+
     double tc1 = now_s();
     ITensor Th = A * B;
     tb.t_contract_ab += now_s() - tc1;
+
     double tg = now_s();
     ITensor Th2 = Th * G;
     tb.t_apply_gate += now_s() - tg;
+
     double tsvd = now_s();
-    auto [U, S, V] = svd(Th2, IndexSet(l, q1), IndexSet(q2, r), Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
+    auto [U, S, V] = svd(Th2,
+                         IndexSet(l, q1),
+                         IndexSet(q2, r),
+                         itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
     tb.t_svd += now_s() - tsvd;
+
     double trc = now_s();
     ITensor SV = S * V;
-    volatile double sink = elt(SV, 1, 1, 1);
+    volatile double sink = norm(SV);
     (void)sink;
     tb.t_reconstruct += now_s() - trc;
+
     tb.t_total += now_s() - t0;
     return tb;
 }
