@@ -259,27 +259,31 @@ static double time_itensor_contractions_host(int64_t N, int n_contr, tamm::ProcG
 static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
-    if (world_pg.rank().value() == 0) {
+    if(world_pg.rank().value() == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-        int64_t n = 2 * N;
-        for (int i = 0; i < n_svd; ++i) {
+        const int64_t n = 2 * N;
+        for(int i = 0; i < n_svd; ++i) {
             itensor::Index x(int(n), "x");
             itensor::Index y(int(n), "y");
             itensor::ITensor A(x, y);
-            for (int64_t jj = 1; jj <= n; ++jj) {
-                for (int64_t ii = 1; ii <= n; ++ii) {
+            for(int64_t jj = 1; jj <= n; ++jj) {
+                for(int64_t ii = 1; ii <= n; ++ii) {
                     double xr = double(ii - 1);
                     double yr = double(jj - 1);
-                    A.set(ii, jj, std::sin(0.001 * (xr + 3.0 * yr)));
+                    A.set(x=ii, y=jj, std::sin(0.001 * (xr + 3.0 * yr)));
                 }
             }
-            auto r = itensor::svd(A, {x}, {y});
-            (void)r;
+            auto [U, S, V] = itensor::svd(A,
+                                          itensor::IndexSet(x),
+                                          itensor::IndexSet(y),
+                                          itensor::Args("Cutoff", 0.0, "MaxDim", int(n), "SVDMethod", "gesdd"));
+            volatile double sink = itensor::norm(S);
+            (void)sink;
         }
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
     world_pg.barrier();
-    return (world_pg.rank().value() == 0 ? (t1 - t0) : 0.0);
+    return world_pg.rank().value() == 0 ? (t1 - t0) : 0.0;
 }
 
 int main(int argc, char** argv) {
