@@ -185,9 +185,12 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
         slate::copy(A0, A);
 
         std::vector<double> S(static_cast<size_t>(n));
-        slate::Matrix<double> U, VT;
+        int64_t k = n;
+        slate::Matrix<double> U(n, k, nb, 1, 1, self_pg.comm());
+        slate::Matrix<double> VT(k, n, nb, 1, 1, self_pg.comm());
+        U.insertLocalTiles();
+        VT.insertLocalTiles();
         
-        // This is a local SVD, only contributing to this rank's workload
         slate::svd(A, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
     }
 
