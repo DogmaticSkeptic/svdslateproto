@@ -279,19 +279,12 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     Index p2(2, "p2");
     Index q1(2, "q1");
     Index q2(2, "q2");
-    std::mt19937_64 gen(seed);
-    std::uniform_real_distribution<double> dist(-1.0, 1.0);
     ITensor A(l, p1, bb);
     ITensor B(bb, p2, rr);
     double tbuild0 = now_s();
-    for(int il = 1; il <= int(D); ++il)
-        for(int ip = 1; ip <= 2; ++ip)
-            for(int ib = 1; ib <= int(D); ++ib)
-                A.set(l=il, p1=ip, bb=ib, dist(gen));
-    for(int ib = 1; ib <= int(D); ++ib)
-        for(int ip = 1; ip <= 2; ++ip)
-            for(int ir = 1; ir <= int(D); ++ir)
-                B.set(bb=ib, p2=ip, rr=ir, dist(gen));
+    RNG rng(seed);
+    A = randomTensor(rng, l, p1, bb);
+    B = randomTensor(rng, bb, p2, rr);
     ITensor G(p1, p2, q1, q2);
     double G16[16];
     make_gate<double>(gate_kind, G16);
