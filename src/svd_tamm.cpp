@@ -85,40 +85,52 @@ static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGro
 
 static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
+    // The ExecutionContext and Scheduler still span all ranks in the world group.
+    // This ensures that all operations remain collective.
     tamm::ExecutionContext ec{world_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
+
+    // Define the tensor structure once, outside the loop.
     size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(164);
+    auto bt = static_cast<tamm::Tile>(164); // Using a fixed tile size for simplicity
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto [l, b, r] = bond.labels<3>("all");
     auto [p1, p2] = phys.labels<2>("all");
-    std::vector<tamm::Tensor<T>> A_list;
-    std::vector<tamm::Tensor<T>> B_list;
-    std::vector<tamm::Tensor<T>> C_list;
-    A_list.reserve(static_cast<size_t>(n_contr));
-    B_list.reserve(static_cast<size_t>(n_contr));
-    C_list.reserve(static_cast<size_t>(n_contr));
+
+    // Ensure all ranks start timing together.
     world_pg.barrier();
     double t0 = 0.0, t1 = 0.0;
     if (world_pg.rank().value() == 0) {
         t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
     }
+
+    // --- KEY CHANGE ---
+    // The execute call is now INSIDE the loop.
     for (int i = 0; i < n_contr; ++i) {
-        A_list.emplace_back(std::initializer_list<tamm::TiledIndexLabel>{l, p1, b});
-        B_list.emplace_back(std::initializer_list<tamm::TiledIndexLabel>{b, p2, r});
-        C_list.emplace_back(std::initializer_list<tamm::TiledIndexLabel>{l, p1, p2, r});
-        A_list.back().set_dense();
-        B_list.back().set_dense();
-        C_list.back().set_dense();
-        sch.allocate(A_list.back(), B_list.back(), C_list.back());
-        sch(A_list.back()() = T(1.0));
-        sch(B_list.back()() = T(1.0));
-        sch(C_list.back()() = T(0.0));
-        sch(C_list.back()(l, p1, p2, r) = A_list.back()(l, p1, b) * B_list.back()(b, p2, r));
-        sch.deallocate(A_list.back(), B_list.back(), C_list.back());
+        // Tensors are created and destroyed within the scope of the loop,
+        // which keeps memory usage low.
+        tamm::Tensor<T> A({l, p1, b});
+        tamm::Tensor<T> B({b, p2, r});
+        tamm::Tensor<T> C({l, p1, p2, r});
+        A.set_dense();
+        B.set_dense();
+        C.set_dense();
+
+        // Schedule the full lifecycle of a single contraction.
+        sch.allocate(A, B, C);
+        sch(A() = T(1.0));
+        sch(B() = T(1.0));
+        sch(C() = T(0.0));
+        sch(C(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r));
+        sch.deallocate(A, B, C);
+        
+        // Execute this small batch of operations immediately.
+        // The scheduler's internal list is now cleared for the next iteration.
+        sch.execute(ec.exhw(), false);
     }
-    sch.execute(ec.exhw(), false);
+
+    // Ensure all ranks have finished before stopping the timer.
     world_pg.barrier();
     if (world_pg.rank().value() == 0) {
         t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
