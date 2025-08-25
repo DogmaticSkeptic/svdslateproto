@@ -144,7 +144,8 @@ static double time_slate_svds(int64_t N, int n_svd, tamm::ProcGroup world_pg) {
     world_pg.barrier();
     const int64_t n = 2 * N;
     const int64_t nb = 256;
-    tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 8);
+    //tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 8);
+    tamm::ProcGroup self_pg = tamm::ProcGroup::create_self();
     slate::Matrix<double> A0(n, n, nb, 1, 1, self_pg.comm());
     A0.insertLocalTiles();
     std::mt19937_64 gen(42);
