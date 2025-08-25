@@ -42,7 +42,7 @@ static void fill_local_tiles(slate::Matrix<double>& A) {
 
 static double time_tamm_contractions_queue(int64_t N, int n_contr, tamm::ProcGroup world_pg) {
     using T = double;
-    tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
+    tamm::ProcGroup self_pg = tamm::ProcGroup::create_self();//tamm::ProcGroup self_pg = tamm::ProcGroup::create_subgroups(world_pg, 1);
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     tamm::AtomicCounterGA ac{world_pg, 1};
