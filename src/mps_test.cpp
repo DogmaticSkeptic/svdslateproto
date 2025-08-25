@@ -21,9 +21,21 @@ struct Args {
     i64 tilesz = 256;
 };
 
-static inline void rprint(int rank, const std::string& s) {
-    std::cout << "[Rank " << rank << "] " << s << std::endl;
-}
+struct TimeBreakdown {
+    double t_allocate = 0.0;
+    double t_fill_random = 0.0;
+    double t_gate_fill = 0.0;
+    double t_contract_ab = 0.0;
+    double t_apply_gate = 0.0;
+    double t_pack = 0.0;
+    double t_copy_in = 0.0;
+    double t_svd = 0.0;
+    double t_copy_out = 0.0;
+    double t_truncate = 0.0;
+    double t_fill_uvt = 0.0;
+    double t_deallocate = 0.0;
+    double t_total = 0.0;
+};
 
 static bool eqs(const char* a, const char* b) {
     return std::strcmp(a, b) == 0;
@@ -42,39 +54,33 @@ static Args parse_args(int argc, char** argv) {
     return a;
 }
 
-template<typename T>
-static void make_gate(const std::string& kind, T* G16, int rank) {
-    rprint(rank, "make_gate enter kind=" + kind);
-    for(int i = 0; i < 16; i++) G16[i] = T(0);
-    if(kind == "cnot") { G16[0]=1; G16[5]=1; G16[14]=1; G16[11]=1; rprint(rank, "make_gate leave kind=cnot"); return; }
-    if(kind == "cz") { G16[0]=1; G16[5]=1; G16[10]=1; G16[15]=-1; rprint(rank, "make_gate leave kind=cz"); return; }
-    if(kind == "iswap") { G16[0]=1; G16[6]=1; G16[9]=1; G16[15]=1; rprint(rank, "make_gate leave kind=iswap"); return; }
-    for(int i = 0; i < 4; i++) G16[i*4+i] = 1;
-    rprint(rank, "make_gate leave kind=identity");
+static inline double now_s() {
+    return std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 }
 
 template<typename T>
-static void fill_random(tamm::Tensor<T>& X, unsigned long long seed, i64 salt, const char* name, int rank) {
-    rprint(rank, std::string("fill_random enter tensor=") + name + " seed=" + std::to_string(seed) + " salt=" + std::to_string(salt));
+static void make_gate(const std::string& kind, T* G16) {
+    for(int i = 0; i < 16; i++) G16[i] = T(0);
+    if(kind == "cnot") { G16[0]=1; G16[5]=1; G16[14]=1; G16[11]=1; return; }
+    if(kind == "cz") { G16[0]=1; G16[5]=1; G16[10]=1; G16[15]=-1; return; }
+    if(kind == "iswap") { G16[0]=1; G16[6]=1; G16[9]=1; G16[15]=1; return; }
+    for(int i = 0; i < 4; i++) G16[i*4+i] = 1;
+}
+
+template<typename T>
+static void fill_random(tamm::Tensor<T>& X, unsigned long long seed, i64 salt) {
     std::mt19937_64 gen(seed + static_cast<unsigned long long>(salt));
     std::uniform_real_distribution<T> dist(-1.0, 1.0);
     auto f = [&](const tamm::IndexVector& bid, tamm::span<T> buf) {
-        auto dims = X.block_dims(bid);
-        auto offs = X.block_offsets(bid);
-        rprint(rank, std::string("fill_random block tensor=") + name +
-                      " off=[" + std::to_string(offs[0]) + "," + std::to_string(offs[1]) + "," + std::to_string(offs[2]) + "]" +
-                      " dim=[" + std::to_string(dims[0]) + "," + std::to_string(dims[1]) + "," + std::to_string(dims[2]) + "]" +
-                      " size=" + std::to_string(buf.size()));
         for(size_t i = 0; i < buf.size(); i++) buf[i] = dist(gen);
     };
     tamm::update_tensor(X, f);
-    rprint(rank, std::string("fill_random leave tensor=") + name);
 }
 
 template<typename T>
-static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16, const char* name, int rank) {
+static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16) {
     auto f = [&](const tamm::IndexVector& bid, tamm::span<T> buf) {
-        auto offs = G.block_offsets(bid);  // [p1o, p2o, q1o, q2o], each 0 or 1
+        auto offs = G.block_offsets(bid);
         int p1 = static_cast<int>(offs[0]);
         int p2 = static_cast<int>(offs[1]);
         int q1 = static_cast<int>(offs[2]);
@@ -86,16 +92,12 @@ static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16, const char* name,
 }
 
 template<typename T>
-static void pack_theta_to_matrix(const tamm::Tensor<T>& Th, i64 D, std::vector<T>& M, int rank) {
+static void pack_theta_to_matrix(const tamm::Tensor<T>& Th, i64 D, std::vector<T>& M) {
     i64 m = 2 * D;
     i64 n = 2 * D;
-    rprint(rank, "pack_theta_to_matrix enter m=" + std::to_string(m) + " n=" + std::to_string(n) + " M.size=" + std::to_string(M.size()));
     auto f = [&](tamm::Tensor<T> t, const tamm::IndexVector& bid, tamm::span<T> buf) {
         auto dims = t.block_dims(bid);
         auto offs = t.block_offsets(bid);
-        rprint(rank, std::string("pack block off=[") + std::to_string(offs[0]) + "," + std::to_string(offs[1]) + "," + std::to_string(offs[2]) + "," + std::to_string(offs[3]) + "]" +
-                      " dim=[" + std::to_string(dims[0]) + "," + std::to_string(dims[1]) + "," + std::to_string(dims[2]) + "," + std::to_string(dims[3]) + "]" +
-                      " size=" + std::to_string(buf.size()));
         i64 lo = offs[0];
         i64 qo = offs[1];
         i64 ro = offs[2];
@@ -115,16 +117,13 @@ static void pack_theta_to_matrix(const tamm::Tensor<T>& Th, i64 D, std::vector<T
         }
     };
     tamm::update_tensor_general(Th, f);
-    rprint(rank, "pack_theta_to_matrix leave");
 }
 
 template<typename T>
-static void slate_copy_in(slate::Matrix<T>& A, const std::vector<T>& src, int rank) {
-    rprint(rank, "slate_copy_in enter mt=" + std::to_string(A.mt()) + " nt=" + std::to_string(A.nt()) + " m=" + std::to_string(A.m()) + " n=" + std::to_string(A.n()));
+static void slate_copy_in(slate::Matrix<T>& A, const std::vector<T>& src) {
     for(int64_t j = 0; j < A.nt(); j++) {
         for(int64_t i = 0; i < A.mt(); i++) {
             if(!A.tileIsLocal(i, j)) continue;
-            rprint(rank, "slate_copy_in tile i=" + std::to_string(i) + " j=" + std::to_string(j));
             A.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor);
             auto Tt = A(i, j);
             T* a = Tt.data();
@@ -140,16 +139,13 @@ static void slate_copy_in(slate::Matrix<T>& A, const std::vector<T>& src, int ra
             }
         }
     }
-    rprint(rank, "slate_copy_in leave");
 }
 
 template<typename T>
-static void slate_copy_out(slate::Matrix<T>& A, std::vector<T>& dst, int rank) {
-    rprint(rank, "slate_copy_out enter mt=" + std::to_string(A.mt()) + " nt=" + std::to_string(A.nt()) + " m=" + std::to_string(A.m()) + " n=" + std::to_string(A.n()));
+static void slate_copy_out(slate::Matrix<T>& A, std::vector<T>& dst) {
     for(int64_t j = 0; j < A.nt(); j++) {
         for(int64_t i = 0; i < A.mt(); i++) {
             if(!A.tileIsLocal(i, j)) continue;
-            rprint(rank, "slate_copy_out tile i=" + std::to_string(i) + " j=" + std::to_string(j));
             A.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
             auto Tt = A(i, j);
             const T* a = Tt.data();
@@ -165,19 +161,14 @@ static void slate_copy_out(slate::Matrix<T>& A, std::vector<T>& dst, int rank) {
             }
         }
     }
-    rprint(rank, "slate_copy_out leave");
 }
 
 template<typename T>
-static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i64 chi, const std::vector<T>& U, const std::vector<T>& S, const std::vector<T>& VT, int rank) {
+static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i64 chi, const std::vector<T>& U, const std::vector<T>& S, const std::vector<T>& VT) {
     i64 n = 2 * D;
-    rprint(rank, "fill_from_u_s_vt enter D=" + std::to_string(D) + " chi=" + std::to_string(chi) + " n=" + std::to_string(n));
     auto la = [&](const tamm::IndexVector& bid, tamm::span<T> buf) {
         auto dims = A2.block_dims(bid);
         auto offs = A2.block_offsets(bid);
-        rprint(rank, std::string("fill A2 block off=[") + std::to_string(offs[0]) + "," + std::to_string(offs[1]) + "," + std::to_string(offs[2]) + "]" +
-                      " dim=[" + std::to_string(dims[0]) + "," + std::to_string(dims[1]) + "," + std::to_string(dims[2]) + "]" +
-                      " size=" + std::to_string(buf.size()));
         i64 lo = offs[0];
         i64 qo = offs[1];
         i64 so = offs[2];
@@ -196,9 +187,6 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
     auto lb = [&](const tamm::IndexVector& bid, tamm::span<T> buf) {
         auto dims = B2.block_dims(bid);
         auto offs = B2.block_offsets(bid);
-        rprint(rank, std::string("fill B2 block off=[") + std::to_string(offs[0]) + "," + std::to_string(offs[1]) + "," + std::to_string(offs[2]) + "]" +
-                      " dim=[" + std::to_string(dims[0]) + "," + std::to_string(dims[1]) + "," + std::to_string(dims[2]) + "]" +
-                      " size=" + std::to_string(buf.size()));
         i64 so = offs[0];
         i64 qo = offs[1];
         i64 ro = offs[2];
@@ -216,12 +204,13 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
     };
     tamm::update_tensor(A2, la);
     tamm::update_tensor(B2, lb);
-    rprint(rank, "fill_from_u_s_vt leave");
 }
 
 template<typename T>
-static void two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg, int rank) {
-    rprint(rank, "two_site_update enter D=" + std::to_string(D) + " Dmax=" + std::to_string(Dmax) + " tilesz=" + std::to_string(tilesz) + " gate=" + gate_kind + " seed=" + std::to_string(seed));
+static TimeBreakdown two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
+    TimeBreakdown tb;
+    double t0 = now_s();
+
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
     tamm::Tile bt = static_cast<tamm::Tile>(D);
@@ -234,6 +223,7 @@ static void two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate
     auto p2 = phys.label("all");
     auto q1 = phys.label("all");
     auto q2 = phys.label("all");
+
     tamm::Tensor<T> A({bond, phys, bond});
     tamm::Tensor<T> B({bond, phys, bond});
     tamm::Tensor<T> Th({bond, phys, phys, bond});
@@ -242,47 +232,75 @@ static void two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate
     B.set_dense();
     Th.set_dense();
     Gt.set_dense();
-    rprint(rank, "allocate A B Th Gt");
+
+    double ta0 = now_s();
     sch.allocate(A, B, Th, Gt).execute();
-    rprint(rank, "fill_random A B");
-    fill_random(A, seed, 1, "A", rank);
-    fill_random(B, seed, 2, "B", rank);
+    tb.t_allocate += now_s() - ta0;
+
+    double tf0 = now_s();
+    fill_random(A, seed, 1);
+    fill_random(B, seed, 2);
+    tb.t_fill_random += now_s() - tf0;
+
     T G16[16];
-    make_gate<T>(gate_kind, G16, rank);
-    fill_gate_tensor(Gt, G16, "Gt", rank);
-    rprint(rank, "compute Th = A * B");
+    make_gate<T>(gate_kind, G16);
+    double tg0 = now_s();
+    fill_gate_tensor(Gt, G16);
+    tb.t_gate_fill += now_s() - tg0;
+
+    double tc1_0 = now_s();
     sch(Th(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r)).execute();
-    rprint(rank, "allocate Th2 and apply gate");
+    tb.t_contract_ab += now_s() - tc1_0;
+
     tamm::Tensor<T> Th2({bond, phys, phys, bond});
     Th2.set_dense();
+    double ta1 = now_s();
     sch.allocate(Th2).execute();
+    tb.t_allocate += now_s() - ta1;
+
+    double tc2_0 = now_s();
     sch(Th2(l, q1, q2, r) = Th(l, p1, p2, r) * Gt(p1, p2, q1, q2)).execute();
+    tb.t_apply_gate += now_s() - tc2_0;
+
     i64 m = 2 * D;
     i64 n = 2 * D;
-    rprint(rank, "pack theta to matrix M m=" + std::to_string(m) + " n=" + std::to_string(n));
     std::vector<T> M(static_cast<size_t>(m) * static_cast<size_t>(n));
-    pack_theta_to_matrix(Th2, D, M, rank);
+
+    double tpack0 = now_s();
+    pack_theta_to_matrix(Th2, D, M);
+    tb.t_pack += now_s() - tpack0;
+
     slate::Matrix<T> Mmat(m, n, tilesz, 1, 1, self_pg.comm());
     Mmat.insertLocalTiles();
-    slate_copy_in(Mmat, M, rank);
+
+    double tci0 = now_s();
+    slate_copy_in(Mmat, M);
+    tb.t_copy_in += now_s() - tci0;
+
     i64 k = std::min<i64>(m, n);
-    rprint(rank, "prepare SVD k=" + std::to_string(k));
     std::vector<T> S(static_cast<size_t>(k));
     slate::Matrix<T> U(m, k, tilesz, 1, 1, self_pg.comm());
     slate::Matrix<T> VT(k, n, tilesz, 1, 1, self_pg.comm());
     U.insertLocalTiles();
     VT.insertLocalTiles();
-    rprint(rank, "svd start");
+
+    double tsvd0 = now_s();
     slate::svd(Mmat, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
-    rprint(rank, "svd done");
+    tb.t_svd += now_s() - tsvd0;
+
     std::vector<T> Ubuf(static_cast<size_t>(m) * static_cast<size_t>(k));
     std::vector<T> VTbuf(static_cast<size_t>(k) * static_cast<size_t>(n));
-    slate_copy_out(U, Ubuf, rank);
-    slate_copy_out(VT, VTbuf, rank);
+
+    double tco0 = now_s();
+    slate_copy_out(U, Ubuf);
+    slate_copy_out(VT, VTbuf);
+    tb.t_copy_out += now_s() - tco0;
+
     i64 chi = std::min<i64>(k, Dmax);
-    rprint(rank, "truncate chi=" + std::to_string(chi));
     std::vector<T> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
     std::vector<T> VTc(static_cast<size_t>(chi) * static_cast<size_t>(n));
+
+    double ttr0 = now_s();
     for(i64 i = 0; i < m; i++) {
         for(i64 j = 0; j < chi; j++) {
             Uc[static_cast<size_t>(i) * static_cast<size_t>(chi) + static_cast<size_t>(j)] =
@@ -297,18 +315,61 @@ static void two_site_update(i64 D, i64 Dmax, i64 tilesz, const std::string& gate
     }
     std::vector<T> Sx(static_cast<size_t>(chi));
     for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S[static_cast<size_t>(i)];
+    tb.t_truncate += now_s() - ttr0;
+
     tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi)}, static_cast<tamm::Tile>(chi)};
     auto s = chi_tis.label("all");
     tamm::Tensor<T> A2({bond, phys, chi_tis});
     tamm::Tensor<T> B2({chi_tis, phys, bond});
     A2.set_dense();
     B2.set_dense();
-    rprint(rank, "allocate A2 B2 and refill from U S VT");
+
+    double ta2 = now_s();
     sch.allocate(A2, B2).execute();
-    fill_from_u_s_vt(A2, B2, D, chi, Uc, Sx, VTc, rank);
-    rprint(rank, "deallocate tensors");
+    tb.t_allocate += now_s() - ta2;
+
+    double tfuv0 = now_s();
+    fill_from_u_s_vt(A2, B2, D, chi, Uc, Sx, VTc);
+    tb.t_fill_uvt += now_s() - tfuv0;
+
+    double td0 = now_s();
     sch.deallocate(A, B, Th, Th2, Gt, A2, B2).execute();
-    rprint(rank, "two_site_update leave");
+    tb.t_deallocate += now_s() - td0;
+
+    tb.t_total += now_s() - t0;
+    return tb;
+}
+
+static void print_input_and_global(const Args& args, int rank, int world_size, double total_max_time) {
+    if(rank == 0) {
+        std::cout << "ranks " << world_size << std::endl;
+        std::cout << "config bond_dim " << args.bond_dim
+                  << " max_bond_dim " << args.max_bond_dim
+                  << " gates " << args.gates
+                  << " gate " << args.gate
+                  << " seed " << args.seed
+                  << " tilesz " << args.tilesz << std::endl;
+        std::cout << "time_total " << std::fixed << std::setprecision(6) << total_max_time << " s" << std::endl;
+    }
+}
+
+static void print_rank_breakdown(int rank, const TimeBreakdown& tb, long long tasks) {
+    std::cout << "rank " << rank
+              << " tasks " << tasks
+              << " total " << std::fixed << std::setprecision(6) << tb.t_total
+              << "s allocate " << tb.t_allocate
+              << "s fill_random " << tb.t_fill_random
+              << "s gate_fill " << tb.t_gate_fill
+              << "s contract_ab " << tb.t_contract_ab
+              << "s apply_gate " << tb.t_apply_gate
+              << "s pack " << tb.t_pack
+              << "s copy_in " << tb.t_copy_in
+              << "s svd " << tb.t_svd
+              << "s copy_out " << tb.t_copy_out
+              << "s truncate " << tb.t_truncate
+              << "s fill_uvt " << tb.t_fill_uvt
+              << "s deallocate " << tb.t_deallocate
+              << "s" << std::endl;
 }
 
 int main(int argc, char** argv) {
@@ -318,33 +379,44 @@ int main(int argc, char** argv) {
     auto self_pg = tamm::ProcGroup::create_self();
     int r = world_pg.rank().value();
     int p = world_pg.size().value();
-    if(r == 0) {
-        std::cout << "[Rank 0] ranks " << p << std::endl;
-        std::cout << "[Rank 0] config bond_dim " << args.bond_dim
-                  << " max_bond_dim " << args.max_bond_dim
-                  << " gates " << args.gates
-                  << " gate " << args.gate
-                  << " seed " << args.seed
-                  << " tilesz " << args.tilesz << std::endl;
-    }
+
     world_pg.barrier();
-    rprint(r, "initialize atomic counter");
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
-    double t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+
+    double t0 = now_s();
+    TimeBreakdown acc;
+    long long tasks_done = 0;
+
     while(true) {
         long long idx = ac.fetch_add(0, 1);
         if(idx >= args.gates) break;
-        rprint(r, "gate index " + std::to_string(idx));
-        two_site_update<double>(args.bond_dim, args.max_bond_dim, args.tilesz, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg, r);
+        TimeBreakdown tb = two_site_update<double>(args.bond_dim, args.max_bond_dim, args.tilesz, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
+        acc.t_allocate += tb.t_allocate;
+        acc.t_fill_random += tb.t_fill_random;
+        acc.t_gate_fill += tb.t_gate_fill;
+        acc.t_contract_ab += tb.t_contract_ab;
+        acc.t_apply_gate += tb.t_apply_gate;
+        acc.t_pack += tb.t_pack;
+        acc.t_copy_in += tb.t_copy_in;
+        acc.t_svd += tb.t_svd;
+        acc.t_copy_out += tb.t_copy_out;
+        acc.t_truncate += tb.t_truncate;
+        acc.t_fill_uvt += tb.t_fill_uvt;
+        acc.t_deallocate += tb.t_deallocate;
+        acc.t_total += tb.t_total;
+        tasks_done += 1;
     }
+
     world_pg.barrier();
-    double t1 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    double t1 = now_s();
     double dt = t1 - t0;
     double mx = 0.0;
     world_pg.allreduce(&dt, &mx, 1, tamm::ReduceOp::max);
-    if(r == 0) std::cout << "[Rank 0] time_total " << std::fixed << std::setprecision(6) << mx << " s" << std::endl;
-    rprint(r, "finalize atomic counter");
+
+    print_input_and_global(args, r, p, mx);
+    print_rank_breakdown(r, acc, tasks_done);
+
     ac.deallocate();
     tamm::finalize();
     return 0;
