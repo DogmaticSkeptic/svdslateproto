@@ -1,6 +1,6 @@
 #include <tamm/tamm.hpp>
-#include <slate/slate.hh>
 #include <itensor/all.h>
+#include <lapack.hh>
 #include <vector>
 #include <string>
 #include <random>
@@ -29,9 +29,7 @@ struct TammTB {
     double t_contract_ab = 0.0;
     double t_apply_gate = 0.0;
     double t_pack = 0.0;
-    double t_copy_in = 0.0;
     double t_svd = 0.0;
-    double t_copy_out = 0.0;
     double t_truncate = 0.0;
     double t_fill_uvt = 0.0;
     double t_deallocate = 0.0;
@@ -102,9 +100,8 @@ static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16) {
 }
 
 template<typename T>
-static void pack_theta_to_matrix(const tamm::Tensor<T>& Th, i64 D, std::vector<T>& M) {
+static void pack_theta_to_matrix_colmajor(const tamm::Tensor<T>& Th, i64 D, std::vector<T>& A) {
     i64 m = 2 * D;
-    i64 n = 2 * D;
     auto f = [&](tamm::Tensor<T> t, const tamm::IndexVector& bid, tamm::span<T> buf) {
         auto dims = t.block_dims(bid);
         auto offs = t.block_offsets(bid);
@@ -123,54 +120,10 @@ static void pack_theta_to_matrix(const tamm::Tensor<T>& Th, i64 D, std::vector<T
         for(i64 r = 0; r < sd; r++, c++) {
             i64 row = (lo + l) * 2 + (qo + q1);
             i64 col = (q2 + ro) * D + (so + r);
-            M[static_cast<size_t>(row) * static_cast<size_t>(n) + static_cast<size_t>(col)] = buf[c];
+            A[static_cast<size_t>(row) + static_cast<size_t>(m) * static_cast<size_t>(col)] = buf[c];
         }
     };
     tamm::update_tensor_general(Th, f);
-}
-
-template<typename T>
-static void slate_copy_in(slate::Matrix<T>& A, const std::vector<T>& src) {
-    for(int64_t j = 0; j < A.nt(); j++) {
-        for(int64_t i = 0; i < A.mt(); i++) {
-            if(!A.tileIsLocal(i, j)) continue;
-            A.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor);
-            auto Tt = A(i, j);
-            T* a = Tt.data();
-            int64_t lda = Tt.stride();
-            int64_t mb = Tt.mb();
-            int64_t nb = Tt.nb();
-            int64_t roff = i * mb;
-            int64_t coff = j * nb;
-            for(int64_t jj = 0; jj < nb; jj++) {
-                for(int64_t ii = 0; ii < mb; ii++) {
-                    a[ii + lda * jj] = src[static_cast<size_t>(roff + ii) * static_cast<size_t>(A.n()) + static_cast<size_t>(coff + jj)];
-                }
-            }
-        }
-    }
-}
-
-template<typename T>
-static void slate_copy_out(slate::Matrix<T>& A, std::vector<T>& dst) {
-    for(int64_t j = 0; j < A.nt(); j++) {
-        for(int64_t i = 0; i < A.mt(); i++) {
-            if(!A.tileIsLocal(i, j)) continue;
-            A.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
-            auto Tt = A(i, j);
-            const T* a = Tt.data();
-            int64_t lda = Tt.stride();
-            int64_t mb = Tt.mb();
-            int64_t nb = Tt.nb();
-            int64_t roff = i * mb;
-            int64_t coff = j * nb;
-            for(int64_t jj = 0; jj < nb; jj++) {
-                for(int64_t ii = 0; ii < mb; ii++) {
-                    dst[static_cast<size_t>(roff + ii) * static_cast<size_t>(A.n()) + static_cast<size_t>(coff + jj)] = a[ii + lda * jj];
-                }
-            }
-        }
-    }
 }
 
 template<typename T>
@@ -216,8 +169,7 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
     tamm::update_tensor(B2, lb);
 }
 
-template<typename T>
-static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
+static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
     TammTB tb;
     double t0 = now_s();
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
@@ -232,10 +184,10 @@ static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::strin
     auto p2 = phys.label("all");
     auto q1 = phys.label("all");
     auto q2 = phys.label("all");
-    tamm::Tensor<T> A({bond, phys, bond});
-    tamm::Tensor<T> B({bond, phys, bond});
-    tamm::Tensor<T> Th({bond, phys, phys, bond});
-    tamm::Tensor<T> Gt({phys, phys, phys, phys});
+    tamm::Tensor<double> A({bond, phys, bond});
+    tamm::Tensor<double> B({bond, phys, bond});
+    tamm::Tensor<double> Th({bond, phys, phys, bond});
+    tamm::Tensor<double> Gt({phys, phys, phys, phys});
     A.set_dense();
     B.set_dense();
     Th.set_dense();
@@ -247,15 +199,15 @@ static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::strin
     fill_random(A, seed, 1);
     fill_random(B, seed, 2);
     tb.t_fill_random += now_s() - tf0;
-    T G16[16];
-    make_gate<T>(gate_kind, G16);
+    double G16[16];
+    make_gate<double>(gate_kind, G16);
     double tg0 = now_s();
     fill_gate_tensor(Gt, G16);
     tb.t_gate_fill += now_s() - tg0;
     double tc1_0 = now_s();
     sch(Th(l, p1, p2, r) = A(l, p1, b) * B(b, p2, r)).execute();
     tb.t_contract_ab += now_s() - tc1_0;
-    tamm::Tensor<T> Th2({bond, phys, phys, bond});
+    tamm::Tensor<double> Th2({bond, phys, phys, bond});
     Th2.set_dense();
     double ta1 = now_s();
     sch.allocate(Th2).execute();
@@ -265,53 +217,41 @@ static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::strin
     tb.t_apply_gate += now_s() - tc2_0;
     i64 m = 2 * D;
     i64 n = 2 * D;
-    std::vector<T> M(static_cast<size_t>(m) * static_cast<size_t>(n));
+    std::vector<double> Acol(static_cast<size_t>(m) * static_cast<size_t>(n));
     double tpack0 = now_s();
-    pack_theta_to_matrix(Th2, D, M);
+    pack_theta_to_matrix_colmajor(Th2, D, Acol);
     tb.t_pack += now_s() - tpack0;
-    slate::Matrix<T> Mmat(m, n, tilesz, 1, 1, self_pg.comm());
-    Mmat.insertLocalTiles();
-    double tci0 = now_s();
-    slate_copy_in(Mmat, M);
-    tb.t_copy_in += now_s() - tci0;
     i64 k = std::min<i64>(m, n);
-    std::vector<T> S(static_cast<size_t>(k));
-    slate::Matrix<T> U(m, k, tilesz, 1, 1, self_pg.comm());
-    slate::Matrix<T> VT(k, n, tilesz, 1, 1, self_pg.comm());
-    U.insertLocalTiles();
-    VT.insertLocalTiles();
+    std::vector<double> S(static_cast<size_t>(k));
+    std::vector<double> U(static_cast<size_t>(m) * static_cast<size_t>(k));
+    std::vector<double> VT(static_cast<size_t>(k) * static_cast<size_t>(n));
+    lapack::Job job = lapack::Job::Some;
     double tsvd0 = now_s();
-    slate::svd(Mmat, S, U, VT, {{slate::Option::Target, slate::Target::Devices}});
+    lapack::gesdd(job, m, n, Acol.data(), m, S.data(), U.data(), m, VT.data(), k);
     tb.t_svd += now_s() - tsvd0;
-    std::vector<T> Ubuf(static_cast<size_t>(m) * static_cast<size_t>(k));
-    std::vector<T> VTbuf(static_cast<size_t>(k) * static_cast<size_t>(n));
-    double tco0 = now_s();
-    slate_copy_out(U, Ubuf);
-    slate_copy_out(VT, VTbuf);
-    tb.t_copy_out += now_s() - tco0;
     i64 chi = std::min<i64>(k, Dmax);
-    std::vector<T> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
-    std::vector<T> VTc(static_cast<size_t>(chi) * static_cast<size_t>(n));
+    std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
+    std::vector<double> VTc(static_cast<size_t>(chi) * static_cast<size_t>(n));
     double ttr0 = now_s();
     for(i64 i = 0; i < m; i++) {
         for(i64 j = 0; j < chi; j++) {
             Uc[static_cast<size_t>(i) * static_cast<size_t>(chi) + static_cast<size_t>(j)] =
-                Ubuf[static_cast<size_t>(i) * static_cast<size_t>(k) + static_cast<size_t>(j)];
+                U[static_cast<size_t>(i) * static_cast<size_t>(k) + static_cast<size_t>(j)];
         }
     }
     for(i64 i = 0; i < chi; i++) {
         for(i64 j = 0; j < n; j++) {
             VTc[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)] =
-                VTbuf[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
+                VT[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
         }
     }
-    std::vector<T> Sx(static_cast<size_t>(chi));
+    std::vector<double> Sx(static_cast<size_t>(chi));
     for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S[static_cast<size_t>(i)];
     tb.t_truncate += now_s() - ttr0;
     tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi)}, static_cast<tamm::Tile>(chi)};
     auto s = chi_tis.label("all");
-    tamm::Tensor<T> A2({bond, phys, chi_tis});
-    tamm::Tensor<T> B2({chi_tis, phys, bond});
+    tamm::Tensor<double> A2({bond, phys, chi_tis});
+    tamm::Tensor<double> B2({chi_tis, phys, bond});
     A2.set_dense();
     B2.set_dense();
     double ta2 = now_s();
@@ -329,10 +269,8 @@ static TammTB two_site_update_tamm(i64 D, i64 Dmax, i64 tilesz, const std::strin
 
 static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed) {
     using namespace itensor;
-
     ITensorTB tb;
     double t0 = now_s();
-
     Index l(int(D), "l");
     Index b(int(D), "b");
     Index r(int(D), "r");
@@ -340,24 +278,19 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     Index p2(2, "p2");
     Index q1(2, "q1");
     Index q2(2, "q2");
-
     std::mt19937_64 gen(seed);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
-
     ITensor A(l, p1, b);
     ITensor B(b, p2, r);
-
     double tbuild0 = now_s();
     for(int il = 1; il <= int(D); ++il)
         for(int ip = 1; ip <= 2; ++ip)
             for(int ib = 1; ib <= int(D); ++ib)
                 A.set(l=il, p1=ip, b=ib, dist(gen));
-
     for(int ib = 1; ib <= int(D); ++ib)
         for(int ip = 1; ip <= 2; ++ip)
             for(int ir = 1; ir <= int(D); ++ir)
                 B.set(b=ib, p2=ip, r=ir, dist(gen));
-
     ITensor G(p1, p2, q1, q2);
     double G16[16];
     make_gate<double>(gate_kind, G16);
@@ -367,30 +300,27 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
             for(int c = 1; c <= 2; ++c)
                 for(int d = 1; d <= 2; ++d)
                     G.set(p1=a, p2=b2, q1=c, q2=d, G16[idx++]);
-
     tb.t_build += now_s() - tbuild0;
-
     double tc1 = now_s();
     ITensor Th = A * B;
     tb.t_contract_ab += now_s() - tc1;
-
     double tg = now_s();
     ITensor Th2 = Th * G;
     tb.t_apply_gate += now_s() - tg;
-
     double tsvd = now_s();
-    auto [U, S, V] = svd(Th2,
-                         IndexSet(l, q1),
-                         IndexSet(q2, r),
-                         itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
+    auto r = svd(Th2,
+                 IndexSet(l, q1),
+                 IndexSet(q2, r),
+                 itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
+    ITensor U = std::get<0>(r);
+    ITensor S = std::get<1>(r);
+    ITensor V = std::get<2>(r);
     tb.t_svd += now_s() - tsvd;
-
     double trc = now_s();
     ITensor SV = S * V;
     volatile double sink = norm(SV);
     (void)sink;
     tb.t_reconstruct += now_s() - trc;
-
     tb.t_total += now_s() - t0;
     return tb;
 }
@@ -411,16 +341,14 @@ static void print_input_and_global(const Args& args, int rank, int world_size, d
 static void print_rank_breakdown_tamm(int rank, const TammTB& tb, long long tasks) {
     std::cout << "rank " << rank
               << " tasks " << tasks
-              << " TAMM total " << std::fixed << std::setprecision(6) << tb.t_total
+              << " TAMM+GESDD total " << std::fixed << std::setprecision(6) << tb.t_total
               << "s allocate " << tb.t_allocate
               << "s fill_random " << tb.t_fill_random
               << "s gate_fill " << tb.t_gate_fill
               << "s contract_ab " << tb.t_contract_ab
               << "s apply_gate " << tb.t_apply_gate
               << "s pack " << tb.t_pack
-              << "s copy_in " << tb.t_copy_in
               << "s svd " << tb.t_svd
-              << "s copy_out " << tb.t_copy_out
               << "s truncate " << tb.t_truncate
               << "s fill_uvt " << tb.t_fill_uvt
               << "s deallocate " << tb.t_deallocate
@@ -456,7 +384,7 @@ int main(int argc, char** argv) {
     while(true) {
         long long idx = ac.fetch_add(0, 1);
         if(idx >= args.gates) break;
-        TammTB tb1 = two_site_update_tamm<double>(args.bond_dim, args.max_bond_dim, args.tilesz, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
+        TammTB tb1 = two_site_update_tamm_lapack(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
         ITensorTB tb2 = two_site_update_itensor(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx));
         acc_tamm.t_allocate += tb1.t_allocate;
         acc_tamm.t_fill_random += tb1.t_fill_random;
@@ -464,9 +392,7 @@ int main(int argc, char** argv) {
         acc_tamm.t_contract_ab += tb1.t_contract_ab;
         acc_tamm.t_apply_gate += tb1.t_apply_gate;
         acc_tamm.t_pack += tb1.t_pack;
-        acc_tamm.t_copy_in += tb1.t_copy_in;
         acc_tamm.t_svd += tb1.t_svd;
-        acc_tamm.t_copy_out += tb1.t_copy_out;
         acc_tamm.t_truncate += tb1.t_truncate;
         acc_tamm.t_fill_uvt += tb1.t_fill_uvt;
         acc_tamm.t_deallocate += tb1.t_deallocate;
