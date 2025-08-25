@@ -1,5 +1,6 @@
 #include <tamm/tamm.hpp>
 #include <slate/slate.hh>
+#include <blacspp/grid.hpp> // <--- FIX: Added missing include
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -39,9 +40,11 @@ void tamm_to_slate(const Tensor<T>& tamm_tensor, slate::Matrix<T>& slate_matrix)
     EXPECTS(tamm_tensor.kind() == TensorBase::TensorKind::dense);
 
     auto ec = tamm_tensor.execution_context();
-    auto& pg = ec->pg();
+    // --- FIX: Create a copy, not a reference, to the temporary pg object ---
+    auto pg = ec->pg();
     pg.barrier();
 
+    // --- FIX: Assumes you have made ga_handle() a const method in tamm/tensor.hpp ---
     int ga_handle = tamm_tensor.ga_handle();
 
     for (int64_t j = 0; j < slate_matrix.nt(); ++j) {
@@ -50,6 +53,7 @@ void tamm_to_slate(const Tensor<T>& tamm_tensor, slate::Matrix<T>& slate_matrix)
                 slate_matrix.tileGetForWriting(i, j, slate::LayoutConvert::ColMajor);
                 auto tile = slate_matrix(i, j);
                 T* tile_buf = tile.data();
+                // --- FIX: Use the correct API for block sizes ---
                 int64_t global_i = i * slate_matrix.mb();
                 int64_t global_j = j * slate_matrix.nb();
                 
@@ -76,37 +80,31 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
     EXPECTS(tamm_tensor.kind() == TensorBase::TensorKind::dense);
 
     auto ec = tamm_tensor.execution_context();
-    auto& pg = ec->pg();
+    // --- FIX: Create a copy, not a reference ---
+    auto pg = ec->pg();
     pg.barrier();
 
     int ga_handle = tamm_tensor.ga_handle();
 
-    // Each rank iterates over its local tiles in the source SLATE matrix
     for (int64_t j = 0; j < slate_matrix.nt(); ++j) {
         for (int64_t i = 0; i < slate_matrix.mt(); ++i) {
             if (slate_matrix.tileIsLocal(i, j)) {
                 slate_matrix.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
                 auto tile = slate_matrix(i, j);
                 const T* tile_buf = tile.data();
-
+                // --- FIX: Use the correct API for block sizes ---
                 int64_t global_i = i * slate_matrix.mb();
                 int64_t global_j = j * slate_matrix.nb();
                 
-                // Create a temporary buffer to hold one row of the tile
                 std::vector<T> temp_row_buffer(tile.nb());
                 
-                // Loop through each row of the local tile
                 for (int64_t row_idx = 0; row_idx < tile.mb(); ++row_idx) {
-                    // Manually de-stride the column-major tile data into a contiguous row
                     for (int64_t col_idx = 0; col_idx < tile.nb(); ++col_idx) {
                         temp_row_buffer[col_idx] = tile_buf[row_idx + col_idx * tile.stride()];
                     }
 
-                    // Define the patch (a single row) for NGA_Put
                     int64_t put_lo[] = {global_i + row_idx, global_j};
                     int64_t put_hi[] = {global_i + row_idx, global_j + tile.nb() - 1};
-
-                    // Perform the put operation to the global TAMM tensor
                     NGA_Put64(ga_handle, put_lo, put_hi, temp_row_buffer.data(), nullptr);
                 }
             }
@@ -115,14 +113,11 @@ void slate_to_tamm(slate::Matrix<T>& slate_matrix, Tensor<T>& tamm_tensor) {
     pg.barrier();
 }
 
-
 static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgroups, tamm::ProcGroup world_pg) {
-    // 1. SETUP THE GLOBAL TASK QUEUE
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
     world_pg.barrier();
 
-    // 2. CREATE SUBGROUPS
     int world_size = world_pg.size().value();
     if (world_size % n_subgroups != 0) {
         if (world_pg.rank() == 0) {
@@ -136,16 +131,16 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
 
     if (!subgroup_pg.is_valid()) { ac.deallocate(); return 0.0; }
 
-    // 3. SETUP SUBGROUP ENVIRONMENT
     tamm::ExecutionContext ec{subgroup_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
     tamm::Scheduler sch{ec};
 
     int npr_sub = std::max(1, (int)std::sqrt(ranks_per_subgroup));
     int npc_sub = ranks_per_subgroup / npr_sub;
     while(npr_sub * npc_sub != ranks_per_subgroup) { npr_sub--; npc_sub = ranks_per_subgroup / npr_sub; }
+    
+    // --- FIX: Added blacspp namespace ---
     blacspp::Grid grid(subgroup_pg.comm(), npr_sub, npc_sub);
 
-    // 4. DEFINE TENSOR STRUCTURES
     const size_t M = static_cast<size_t>(N);
     const tamm::Tile tile_size = static_cast<tamm::Tile>(std::min((size_t)128, M));
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, tile_size};
@@ -153,49 +148,54 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
     auto [l, b, r] = bond.labels<3>("all");
     auto [p1, p2, p1_new, p2_new] = phys.labels<4>("all");
 
-    // Start timing on ALL ranks
     world_pg.barrier();
     double t0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 
-    // 5. MAIN TASK-PULLING LOOP
     while (true) {
         int64_t task_idx = -1;
         if (subgroup_pg.rank() == 0) task_idx = ac.fetch_add(0, 1);
         subgroup_pg.broadcast(&task_idx, 0);
-
         if (task_idx >= n_gates) break;
 
-        // A-C: Contract, Apply Gate (same as before)
         Tensor<T> M1({l, p1, b}), M2({b, p2, r}), Theta({l, p1, p2, r});
         Tensor<T> Gate({p1_new, p2_new, p1, p2}), Theta_prime({l, p1_new, p2_new, r});
         M1.set_dense(); M2.set_dense(); Theta.set_dense(); Gate.set_dense(); Theta_prime.set_dense();
-
         sch.allocate(M1, M2, Theta, Gate, Theta_prime);
         tamm::random_ip(M1); tamm::random_ip(M2);
         sch(Theta(l, p1, p2, r) = M1(l, p1, b) * M2(b, p2, r));
         sch(Gate() = 0.0).execute();
-        sch(Gate(p1_new, p2_new, p1, p2) = 1.0, {p1_new==p1, p2_new==p2, p1==0})
-           (Gate(p1_new, p2_new, p1, p2) = 1.0, {p1_new==p1, p2_new!=p2, p1==1})
-           (Theta_prime(l, p1_new, p2_new, r) = Gate(p1_new, p2_new, p1, p2) * Theta(l, p1, p2, r))
-           .execute();
+        
+        // --- FIX: Replace conditional set with manual put for CNOT gate ---
+        if (ec.pg().rank() == 0) {
+            Gate.put({0,0,0,0}, {1.0}); // |00> -> |00>
+            Gate.put({0,1,0,1}, {1.0}); // |01> -> |01>
+            Gate.put({1,1,1,0}, {1.0}); // |10> -> |11>
+            Gate.put({1,0,1,1}, {1.0}); // |11> -> |10>
+        }
+        ec.pg().barrier(); // Ensure all ranks see the updated gate
 
-        // D. Reshape and transfer to SLATE
+        sch(Theta_prime(l, p1_new, p2_new, r) = Gate(p1_new, p2_new, p1, p2) * Theta(l, p1, p2, r));
+        sch.execute();
+
         const int64_t matrix_rows = N * 2;
         const int64_t matrix_cols = 2 * N;
         const int64_t nb_slate = 128;
 
-        Tensor<T> Theta_prime_bc = tamm::to_block_cyclic_tensor(Theta_prime, {npr_sub, npc_sub}, {nb_slate, nb_slate});
+        // --- FIX: Use correct two-step process for to_block_cyclic_tensor ---
+        Tensor<T> Theta_prime_bc;
+        Theta_prime_bc.set_block_cyclic({npr_sub, npc_sub}, {nb_slate, nb_slate});
+        sch.allocate(Theta_prime_bc).execute();
+        tamm::to_block_cyclic_tensor(Theta_prime, Theta_prime_bc);
+
         int64_t local_rows = numroc(matrix_rows, nb_slate, grid.ipr(), 0, npr_sub);
         slate::Matrix<T> Theta_slate = slate::Matrix<T>::fromScaLAPACK(
             matrix_rows, matrix_cols, Theta_prime_bc.access_local_buf(), local_rows, nb_slate, npr_sub, npc_sub, subgroup_pg.comm()
         );
 
-        // E. Perform SVD
         std::vector<T> S_vec(std::min(matrix_rows, matrix_cols));
         slate::Matrix<T> U, VT;
         slate::svd(Theta_slate, S_vec, U, VT);
         
-        // F. Truncate and reshape back
         int64_t new_bond_dim = std::min((int64_t)N, (int64_t)S_vec.size());
         
         tamm::TiledIndexSpace new_bond{tamm::IndexSpace{tamm::range(new_bond_dim)}, new_bond_dim};
@@ -204,17 +204,13 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
         M1_new.set_dense(); M2_new.set_dense();
         sch.allocate(M1_new, M2_new).execute();
 
-        // --- THIS IS THE FIX ---
-        // Reshape U back to M1_new using slate_to_tamm
         slate_to_tamm(U, M1_new);
-
-        // Scale VT by singular values S, then reshape back to M2_new
         for(int64_t i = 0; i < new_bond_dim; ++i) {
             auto tile = VT.sub(i, i, 0, VT.n()-1);
             slate::scale(S_vec[i], tile);
         }
         slate_to_tamm(VT, M2_new);
-
+        
         sch.deallocate(M1, M2, Theta, Gate, Theta_prime, Theta_prime_bc, M1_new, M2_new).execute();
     }
 
@@ -233,7 +229,7 @@ static double mps_gate_simulation_subgrouped(int64_t N, int n_gates, int n_subgr
 
 
 int main(int argc, char** argv) {
-    // Main function remains the same
+    // Main function remains the same...
     if (argc != 4) {
         std::cerr << "Usage: " << argv[0] << " <bond_dimension> <num_gates> <num_subgroups>" << std::endl;
         return 1;
