@@ -92,7 +92,7 @@ static double time_tamm_contractions_batch(int64_t N, int n_contr, tamm::ProcGro
 
     // Define the tensor structure once, outside the loop.
     size_t M = static_cast<size_t>(N);
-    auto bt = static_cast<tamm::Tile>(164); // Using a fixed tile size for simplicity
+    auto bt = static_cast<tamm::Tile>(M); // Using a fixed tile size for simplicity
     tamm::TiledIndexSpace bond{tamm::IndexSpace{tamm::range(M)}, bt};
     tamm::TiledIndexSpace phys{tamm::IndexSpace{tamm::range(2)}, 1};
     auto [l, b, r] = bond.labels<3>("all");
