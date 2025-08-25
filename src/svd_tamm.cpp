@@ -278,8 +278,7 @@ static double time_itensor_svds_host(int64_t N, int n_svd, tamm::ProcGroup world
             }
             auto [U, S, V] = itensor::svd(A,
                                           itensor::IndexSet(x),
-                                          itensor::IndexSet(y),
-                                          itensor::Args("Cutoff", 0.0, "MaxDim", int(n), "SVDMethod", "gesdd"));
+                                          itensor::IndexSet(y));
             volatile double sink = itensor::norm(S);
             (void)sink;
         }
