@@ -117,20 +117,25 @@ static void slate_copy_in(slate::Matrix<T>& A, const std::vector<T>& src) {
 }
 
 template<typename T>
-static void slate_copy_out(const slate::Matrix<T>& A, std::vector<T>& dst) {
-    for(int64_t j = 0; j < A.nt(); j++)
-    for(int64_t i = 0; i < A.mt(); i++) {
-        if(!A.tileIsLocal(i, j)) continue;
-        auto Tt = A(i, j);
-        const T* a = Tt.data();
-        int64_t lda = Tt.stride();
-        int64_t mb = Tt.mb();
-        int64_t nb = Tt.nb();
-        int64_t roff = i * mb;
-        int64_t coff = j * nb;
-        for(int64_t jj = 0; jj < nb; jj++)
-        for(int64_t ii = 0; ii < mb; ii++)
-            dst[static_cast<size_t>(roff + ii) * static_cast<size_t>(A.n()) + static_cast<size_t>(coff + jj)] = a[ii + lda * jj];
+static void slate_copy_out(slate::Matrix<T>& A, std::vector<T>& dst) {
+    for(int64_t j = 0; j < A.nt(); j++) {
+        for(int64_t i = 0; i < A.mt(); i++) {
+            if(!A.tileIsLocal(i, j)) continue;
+            A.tileGetForReading(i, j, slate::LayoutConvert::ColMajor);
+            auto Tt = A(i, j);
+            const T* a = Tt.data();
+            int64_t lda = Tt.stride();
+            int64_t mb  = Tt.mb();
+            int64_t nb  = Tt.nb();
+            int64_t roff = i * mb;
+            int64_t coff = j * nb;
+            for(int64_t jj = 0; jj < nb; jj++) {
+                for(int64_t ii = 0; ii < mb; ii++) {
+                    dst[static_cast<size_t>(roff + ii) * static_cast<size_t>(A.n())
+                        + static_cast<size_t>(coff + jj)] = a[ii + lda * jj];
+                }
+            }
+        }
     }
 }
 
