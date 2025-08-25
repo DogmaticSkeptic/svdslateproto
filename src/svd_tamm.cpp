@@ -352,7 +352,7 @@ int main(int argc, char** argv) {
         if (rank == 0) std::cout << "N " << N << " svd eigen host done " << std::fixed << std::setprecision(6) << t_eigen << " s" << std::endl;
         if (rank == 0) std::cout << "N " << N << " itensor contractions host start" << std::endl;
         double t_it_contr = -1.0;
-        if (!stop_contr_itensor) t_it_contr = ;//time_itensor_contractions_host(N, n_contr, world_pg);
+        if (!stop_contr_itensor) t_it_contr = //time_itensor_contractions_host(N, n_contr, world_pg);
         exceeded = 0;
         if (t_it_contr > time_limit) exceeded = 1;
         MPI_Bcast(&exceeded, 1, MPI_INT, 0, world_pg.comm());
