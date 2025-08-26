@@ -48,6 +48,35 @@ struct ITensorTB {
     double t_total = 0.0;
 };
 
+struct CuCtx {
+    cusolverDnHandle_t solver = nullptr;
+    cusolverDnParams_t params = nullptr;
+    cudaStream_t stream = nullptr;
+    gesvdjInfo_t jp = nullptr;
+    int lwork_jac = 0;
+    double* d_work_jac = nullptr;
+    void* d_work = nullptr;
+    void* h_work = nullptr;
+    size_t ws_dev = 0;
+    size_t ws_host = 0;
+    CuCtx() {
+        cusolverDnCreate(&solver);
+        cusolverDnCreateParams(&params);
+        cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+        cusolverDnSetStream(solver, stream);
+        cusolverDnCreateGesvdjInfo(&jp);
+    }
+    ~CuCtx() {
+        if(d_work_jac) cudaFree(d_work_jac);
+        if(d_work) cudaFree(d_work);
+        if(h_work) free(h_work);
+        if(jp) cusolverDnDestroyGesvdjInfo(jp);
+        if(params) cusolverDnDestroyParams(params);
+        if(solver) cusolverDnDestroy(solver);
+        if(stream) cudaStreamDestroy(stream);
+    }
+};
+
 static bool eqs(const char* a, const char* b) {
     return std::strcmp(a, b) == 0;
 }
@@ -105,7 +134,7 @@ static void fill_gate_tensor(tamm::Tensor<T>& G, const T* G16) {
 }
 
 template<typename T>
-static void pack_theta_to_matrix_colmajor(const tamm::Tensor<T>& Th, i64 D, std::vector<T>& A) {
+static void pack_theta_to_matrix_colmajor_ptr(const tamm::Tensor<T>& Th, i64 D, T* A) {
     i64 m = 2 * D;
     auto f = [&](tamm::Tensor<T> t, const tamm::IndexVector& bid, tamm::span<T> buf) {
         auto dims = t.block_dims(bid);
@@ -174,17 +203,10 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
     tamm::update_tensor(B2, lb);
 }
 
-static void svd_jacobi_gpu_econ(const double* A_h, int m, int n, double tol, int sweeps, std::vector<double>& S, std::vector<double>& U_rowmajor, std::vector<double>& VT_rowmajor) {
-    cusolverDnHandle_t h = nullptr;
-    cusolverDnCreate(&h);
-    gesvdjInfo_t jp = nullptr;
-    cusolverDnCreateGesvdjInfo(&jp);
-    cusolverDnXgesvdjSetTolerance(jp, tol);
-    cusolverDnXgesvdjSetMaxSweeps(jp, sweeps);
+static void rsvd_rankk_gpu(CuCtx& ctx, const double* A_h, int m, int n, int k, int p, int niters, std::vector<double>& S, std::vector<double>& U_row, std::vector<double>& VT_row) {
     int lda = m;
     int ldu = m;
     int ldv = n;
-    int econ = 1;
     double* d_A = nullptr;
     double* d_S = nullptr;
     double* d_U = nullptr;
@@ -192,44 +214,97 @@ static void svd_jacobi_gpu_econ(const double* A_h, int m, int n, double tol, int
     int* d_info = nullptr;
     size_t Asz = size_t(lda) * size_t(n) * sizeof(double);
     cudaMalloc((void**)&d_A, Asz);
-    cudaMemcpy(d_A, A_h, Asz, cudaMemcpyHostToDevice);
-    int k = std::min(m, n);
+    cudaMemcpyAsync(d_A, A_h, Asz, cudaMemcpyHostToDevice, ctx.stream);
     cudaMalloc((void**)&d_S, size_t(k) * sizeof(double));
     cudaMalloc((void**)&d_U, size_t(ldu) * size_t(k) * sizeof(double));
     cudaMalloc((void**)&d_V, size_t(ldv) * size_t(k) * sizeof(double));
     cudaMalloc((void**)&d_info, sizeof(int));
-    int lwork = 0;
-    cusolverDnDgesvdj_bufferSize(h, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, &lwork, jp);
-    double* d_work = nullptr;
-    if(lwork > 0) cudaMalloc((void**)&d_work, sizeof(double) * size_t(lwork));
-    cusolverDnDgesvdj(h, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, d_work, lwork, d_info, jp);
-    int info_h = 0;
-    cudaMemcpy(&info_h, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    size_t ws_dev_req = 0, ws_host_req = 0;
+    cusolverDnXgesvdr_bufferSize(ctx.solver, ctx.params, 'S', 'S', m, n, k, p, niters, CUDA_R_64F, d_A, lda, CUDA_R_64F, nullptr, CUDA_R_64F, nullptr, ldu, CUDA_R_64F, nullptr, ldv, CUDA_R_64F, &ws_dev_req, &ws_host_req);
+    if(ws_dev_req > ctx.ws_dev) {
+        if(ctx.d_work) cudaFree(ctx.d_work);
+        ctx.ws_dev = ws_dev_req;
+        cudaMalloc(&ctx.d_work, ctx.ws_dev);
+    }
+    if(ws_host_req > ctx.ws_host) {
+        if(ctx.h_work) free(ctx.h_work);
+        ctx.ws_host = ws_host_req;
+        ctx.h_work = malloc(ctx.ws_host);
+    }
+    cusolverDnXgesvdr(ctx.solver, ctx.params, 'S', 'S', m, n, k, p, niters, CUDA_R_64F, d_A, lda, CUDA_R_64F, d_S, CUDA_R_64F, d_U, ldu, CUDA_R_64F, d_V, ldv, CUDA_R_64F, ctx.d_work, ctx.ws_dev, ctx.h_work, ctx.ws_host, d_info);
+    cudaStreamSynchronize(ctx.stream);
     S.resize(size_t(k));
     std::vector<double> U_col(size_t(ldu) * size_t(k));
     std::vector<double> V_col(size_t(ldv) * size_t(k));
     cudaMemcpy(S.data(), d_S, sizeof(double) * size_t(k), cudaMemcpyDeviceToHost);
     cudaMemcpy(U_col.data(), d_U, sizeof(double) * size_t(ldu) * size_t(k), cudaMemcpyDeviceToHost);
     cudaMemcpy(V_col.data(), d_V, sizeof(double) * size_t(ldv) * size_t(k), cudaMemcpyDeviceToHost);
-    U_rowmajor.assign(size_t(m) * size_t(k), 0.0);
+    U_row.assign(size_t(m) * size_t(k), 0.0);
     for(int i = 0; i < m; i++)
         for(int j = 0; j < k; j++)
-            U_rowmajor[size_t(i) * size_t(k) + size_t(j)] = U_col[size_t(i) + size_t(ldu) * size_t(j)];
-    VT_rowmajor.assign(size_t(k) * size_t(n), 0.0);
+            U_row[size_t(i) * size_t(k) + size_t(j)] = U_col[size_t(i) + size_t(ldu) * size_t(j)];
+    VT_row.assign(size_t(k) * size_t(n), 0.0);
     for(int i = 0; i < k; i++)
         for(int j = 0; j < n; j++)
-            VT_rowmajor[size_t(i) * size_t(n) + size_t(j)] = V_col[size_t(j) + size_t(ldv) * size_t(i)];
-    if(d_work) cudaFree(d_work);
+            VT_row[size_t(i) * size_t(n) + size_t(j)] = V_col[size_t(j) + size_t(ldv) * size_t(i)];
     cudaFree(d_info);
     cudaFree(d_V);
     cudaFree(d_U);
     cudaFree(d_S);
     cudaFree(d_A);
-    cusolverDnDestroyGesvdjInfo(jp);
-    cusolverDnDestroy(h);
 }
 
-static TammTB two_site_update_tamm_cusolver(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg, const Args& args) {
+static void jacobi_full_gpu_ctx(CuCtx& ctx, const double* A_h, int m, int n, double tol, int sweeps, std::vector<double>& S, std::vector<double>& U_row, std::vector<double>& VT_row) {
+    cusolverDnXgesvdjSetTolerance(ctx.jp, tol);
+    cusolverDnXgesvdjSetMaxSweeps(ctx.jp, sweeps);
+    int lda = m;
+    int ldu = m;
+    int ldv = n;
+    int econ = 1;
+    int k = std::min(m, n);
+    double* d_A = nullptr;
+    double* d_S = nullptr;
+    double* d_U = nullptr;
+    double* d_V = nullptr;
+    int* d_info = nullptr;
+    size_t Asz = size_t(lda) * size_t(n) * sizeof(double);
+    cudaMalloc((void**)&d_A, Asz);
+    cudaMemcpyAsync(d_A, A_h, Asz, cudaMemcpyHostToDevice, ctx.stream);
+    cudaMalloc((void**)&d_S, size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_U, size_t(ldu) * size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_V, size_t(ldv) * size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_info, sizeof(int));
+    int lwork_req = 0;
+    cusolverDnDgesvdj_bufferSize(ctx.solver, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, &lwork_req, ctx.jp);
+    if(lwork_req > ctx.lwork_jac) {
+        if(ctx.d_work_jac) cudaFree(ctx.d_work_jac);
+        ctx.lwork_jac = lwork_req;
+        cudaMalloc((void**)&ctx.d_work_jac, sizeof(double) * size_t(ctx.lwork_jac));
+    }
+    cusolverDnDgesvdj(ctx.solver, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, ctx.d_work_jac, ctx.lwork_jac, d_info, ctx.jp);
+    cudaStreamSynchronize(ctx.stream);
+    S.resize(size_t(k));
+    std::vector<double> U_col(size_t(ldu) * size_t(k));
+    std::vector<double> V_col(size_t(ldv) * size_t(k));
+    cudaMemcpy(S.data(), d_S, sizeof(double) * size_t(k), cudaMemcpyDeviceToHost);
+    cudaMemcpy(U_col.data(), d_U, sizeof(double) * size_t(ldu) * size_t(k), cudaMemcpyDeviceToHost);
+    cudaMemcpy(V_col.data(), d_V, sizeof(double) * size_t(ldv) * size_t(k), cudaMemcpyDeviceToHost);
+    U_row.assign(size_t(m) * size_t(k), 0.0);
+    for(int i = 0; i < m; i++)
+        for(int j = 0; j < k; j++)
+            U_row[size_t(i) * size_t(k) + size_t(j)] = U_col[size_t(i) + size_t(ldu) * size_t(j)];
+    VT_row.assign(size_t(k) * size_t(n), 0.0);
+    for(int i = 0; i < k; i++)
+        for(int j = 0; j < n; j++)
+            VT_row[size_t(i) * size_t(n) + size_t(j)] = V_col[size_t(j) + size_t(ldv) * size_t(i)];
+    cudaFree(d_info);
+    cudaFree(d_V);
+    cudaFree(d_U);
+    cudaFree(d_S);
+    cudaFree(d_A);
+}
+
+static TammTB two_site_update_tamm_gpu(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg, const Args& args, CuCtx& ctx) {
     TammTB tb;
     double t0 = now_s();
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
@@ -277,37 +352,40 @@ static TammTB two_site_update_tamm_cusolver(i64 D, i64 Dmax, const std::string& 
     tb.t_apply_gate += now_s() - tc2_0;
     i64 m = 2 * D;
     i64 n = 2 * D;
-    std::vector<double> Acol(static_cast<size_t>(m) * static_cast<size_t>(n));
+    double* A_pinned = nullptr;
+    cudaHostAlloc((void**)&A_pinned, sizeof(double) * size_t(m) * size_t(n), cudaHostAllocDefault);
     double tpack0 = now_s();
-    pack_theta_to_matrix_colmajor(Th2, D, Acol);
+    pack_theta_to_matrix_colmajor_ptr(Th2, D, A_pinned);
     tb.t_pack += now_s() - tpack0;
-    i64 k = std::min<i64>(m, n);
-    std::vector<double> S_full;
-    std::vector<double> U_full_row;
-    std::vector<double> VT_full_row;
+    i64 kfull = std::min<i64>(m, n);
+    i64 chi = std::min<i64>(kfull, Dmax);
+    std::vector<double> S;
+    std::vector<double> U_row;
+    std::vector<double> VT_row;
     double tsvd0 = now_s();
-    svd_jacobi_gpu_econ(Acol.data(), int(m), int(n), args.j_tol, args.j_sweeps, S_full, U_full_row, VT_full_row);
+    if(chi < n) {
+        int p_ov = std::min<int>(int(n - chi), std::max<int>(2 * int(chi), 64));
+        int niters = 2;
+        rsvd_rankk_gpu(ctx, A_pinned, int(m), int(n), int(chi), p_ov, niters, S, U_row, VT_row);
+    } else {
+        jacobi_full_gpu_ctx(ctx, A_pinned, int(m), int(n), args.j_tol, args.j_sweeps, S, U_row, VT_row);
+    }
     tb.t_svd += now_s() - tsvd0;
-    i64 chi = std::min<i64>(k, Dmax);
-    std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
-    std::vector<double> VTc(static_cast<size_t>(chi) * static_cast<size_t>(n));
+    cudaFreeHost(A_pinned);
+    i64 chi_used = chi;
+    std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi_used));
+    std::vector<double> VTc(static_cast<size_t>(chi_used) * static_cast<size_t>(n));
     double ttr0 = now_s();
-    for(i64 i = 0; i < m; i++) {
-        for(i64 j = 0; j < chi; j++) {
-            Uc[static_cast<size_t>(i) * static_cast<size_t>(chi) + static_cast<size_t>(j)] =
-                U_full_row[static_cast<size_t>(i) * static_cast<size_t>(k) + static_cast<size_t>(j)];
-        }
-    }
-    for(i64 i = 0; i < chi; i++) {
-        for(i64 j = 0; j < n; j++) {
-            VTc[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)] =
-                VT_full_row[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
-        }
-    }
-    std::vector<double> Sx(static_cast<size_t>(chi));
-    for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S_full[static_cast<size_t>(i)];
+    for(i64 i = 0; i < m; i++)
+        for(i64 j = 0; j < chi_used; j++)
+            Uc[static_cast<size_t>(i) * static_cast<size_t>(chi_used) + static_cast<size_t>(j)] = U_row[static_cast<size_t>(i) * static_cast<size_t>(chi_used) + static_cast<size_t>(j)];
+    for(i64 i = 0; i < chi_used; i++)
+        for(i64 j = 0; j < n; j++)
+            VTc[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)] = VT_row[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
+    std::vector<double> Sx(static_cast<size_t>(chi_used));
+    for(i64 i = 0; i < chi_used; i++) Sx[static_cast<size_t>(i)] = S[static_cast<size_t>(i)];
     tb.t_truncate += now_s() - ttr0;
-    tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi)}, static_cast<tamm::Tile>(chi)};
+    tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi_used)}, static_cast<tamm::Tile>(chi_used)};
     auto s = chi_tis.label("all");
     tamm::Tensor<double> A2({bond, phys, chi_tis});
     tamm::Tensor<double> B2({chi_tis, phys, bond});
@@ -317,7 +395,7 @@ static TammTB two_site_update_tamm_cusolver(i64 D, i64 Dmax, const std::string& 
     sch.allocate(A2, B2).execute(tamm::ExecutionHW::GPU);
     tb.t_allocate += now_s() - ta2;
     double tfuv0 = now_s();
-    fill_from_u_s_vt(A2, B2, D, chi, Uc, Sx, VTc);
+    fill_from_u_s_vt(A2, B2, D, chi_used, Uc, Sx, VTc);
     tb.t_fill_uvt += now_s() - tfuv0;
     double td0 = now_s();
     sch.deallocate(A, B, Th, Th2, Gt, A2, B2).execute(tamm::ExecutionHW::GPU);
@@ -425,6 +503,7 @@ int main(int argc, char** argv) {
     world_pg.barrier();
     tamm::AtomicCounterGA ac{world_pg, 1};
     ac.allocate(0);
+    CuCtx ctx;
     double t0 = now_s();
     TammTB acc_tamm;
     ITensorTB acc_it;
@@ -432,7 +511,7 @@ int main(int argc, char** argv) {
     while(true) {
         long long idx = ac.fetch_add(0, 1);
         if(idx >= args.gates) break;
-        TammTB tb1 = two_site_update_tamm_cusolver(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg, args);
+        TammTB tb1 = two_site_update_tamm_gpu(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg, args, ctx);
         ITensorTB tb2 = two_site_update_itensor(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx));
         acc_tamm.t_allocate += tb1.t_allocate;
         acc_tamm.t_fill_random += tb1.t_fill_random;
