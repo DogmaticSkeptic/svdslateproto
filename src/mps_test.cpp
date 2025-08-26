@@ -286,7 +286,6 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
 
     double tbuild0 = now_s();
 
-    SeedRandom(static_cast<unsigned int>(seed));
     A = randomITensor(l, p1, bb);
     B = randomITensor(bb, p2, rr);
 
