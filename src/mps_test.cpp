@@ -1,6 +1,5 @@
 #include <tamm/tamm.hpp>
 #include <itensor/all.h>
-#include <lapack.hh>
 #include <vector>
 #include <string>
 #include <random>
@@ -10,6 +9,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cuda_runtime.h>
+#include <cusolverDn.h>
 
 using i64 = long long;
 
@@ -20,6 +21,8 @@ struct Args {
     std::string gate = "cnot";
     unsigned long long seed = 42;
     i64 tilesz = 256;
+    double j_tol = 1e-14;
+    int j_sweeps = 100;
 };
 
 struct TammTB {
@@ -58,6 +61,8 @@ static Args parse_args(int argc, char** argv) {
         else if(eqs(argv[i], "--gate") && i + 1 < argc) a.gate = std::string(argv[++i]);
         else if(eqs(argv[i], "--seed") && i + 1 < argc) a.seed = std::stoull(argv[++i]);
         else if(eqs(argv[i], "--tilesz") && i + 1 < argc) a.tilesz = std::stoll(argv[++i]);
+        else if(eqs(argv[i], "--j_tol") && i + 1 < argc) a.j_tol = std::atof(argv[++i]);
+        else if(eqs(argv[i], "--j_sweeps") && i + 1 < argc) a.j_sweeps = std::atoi(argv[++i]);
     }
     return a;
 }
@@ -169,7 +174,62 @@ static void fill_from_u_s_vt(tamm::Tensor<T>& A2, tamm::Tensor<T>& B2, i64 D, i6
     tamm::update_tensor(B2, lb);
 }
 
-static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg) {
+static void svd_jacobi_gpu_econ(const double* A_h, int m, int n, double tol, int sweeps, std::vector<double>& S, std::vector<double>& U_rowmajor, std::vector<double>& VT_rowmajor) {
+    cusolverDnHandle_t h = nullptr;
+    cusolverDnCreate(&h);
+    gesvdjInfo_t jp = nullptr;
+    cusolverDnCreateGesvdjInfo(&jp);
+    cusolverDnXgesvdjSetTolerance(jp, tol);
+    cusolverDnXgesvdjSetMaxSweeps(jp, sweeps);
+    int lda = m;
+    int ldu = m;
+    int ldv = n;
+    int econ = 1;
+    double* d_A = nullptr;
+    double* d_S = nullptr;
+    double* d_U = nullptr;
+    double* d_V = nullptr;
+    int* d_info = nullptr;
+    size_t Asz = size_t(lda) * size_t(n) * sizeof(double);
+    cudaMalloc((void**)&d_A, Asz);
+    cudaMemcpy(d_A, A_h, Asz, cudaMemcpyHostToDevice);
+    int k = std::min(m, n);
+    cudaMalloc((void**)&d_S, size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_U, size_t(ldu) * size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_V, size_t(ldv) * size_t(k) * sizeof(double));
+    cudaMalloc((void**)&d_info, sizeof(int));
+    int lwork = 0;
+    cusolverDnDgesvdj_bufferSize(h, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, &lwork, jp);
+    double* d_work = nullptr;
+    if(lwork > 0) cudaMalloc((void**)&d_work, sizeof(double) * size_t(lwork));
+    cusolverDnDgesvdj(h, CUSOLVER_EIG_MODE_VECTOR, econ, m, n, d_A, lda, d_S, d_U, ldu, d_V, ldv, d_work, lwork, d_info, jp);
+    int info_h = 0;
+    cudaMemcpy(&info_h, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    S.resize(size_t(k));
+    std::vector<double> U_col(size_t(ldu) * size_t(k));
+    std::vector<double> V_col(size_t(ldv) * size_t(k));
+    cudaMemcpy(S.data(), d_S, sizeof(double) * size_t(k), cudaMemcpyDeviceToHost);
+    cudaMemcpy(U_col.data(), d_U, sizeof(double) * size_t(ldu) * size_t(k), cudaMemcpyDeviceToHost);
+    cudaMemcpy(V_col.data(), d_V, sizeof(double) * size_t(ldv) * size_t(k), cudaMemcpyDeviceToHost);
+    U_rowmajor.assign(size_t(m) * size_t(k), 0.0);
+    for(int i = 0; i < m; i++)
+        for(int j = 0; j < k; j++)
+            U_rowmajor[size_t(i) * size_t(k) + size_t(j)] = U_col[size_t(i) + size_t(ldu) * size_t(j)];
+    VT_rowmajor.assign(size_t(k) * size_t(n), 0.0);
+    for(int i = 0; i < k; i++)
+        for(int j = 0; j < n; j++)
+            VT_rowmajor[size_t(i) * size_t(n) + size_t(j)] = V_col[size_t(j) + size_t(ldv) * size_t(i)];
+    if(d_work) cudaFree(d_work);
+    cudaFree(d_info);
+    cudaFree(d_V);
+    cudaFree(d_U);
+    cudaFree(d_S);
+    cudaFree(d_A);
+    cusolverDnDestroyGesvdjInfo(jp);
+    cusolverDnDestroy(h);
+}
+
+static TammTB two_site_update_tamm_cusolver(i64 D, i64 Dmax, const std::string& gate_kind, unsigned long long seed, tamm::ProcGroup self_pg, const Args& args) {
     TammTB tb;
     double t0 = now_s();
     tamm::ExecutionContext ec{self_pg, tamm::DistributionKind::dense, tamm::MemoryManagerKind::ga};
@@ -222,13 +282,11 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     pack_theta_to_matrix_colmajor(Th2, D, Acol);
     tb.t_pack += now_s() - tpack0;
     i64 k = std::min<i64>(m, n);
-    std::vector<double> S(static_cast<size_t>(k));
-    std::vector<double> U(static_cast<size_t>(m) * static_cast<size_t>(k));
-    std::vector<double> VT(static_cast<size_t>(k) * static_cast<size_t>(n));
-    lapack::Job job = lapack::Job::SomeVec;
+    std::vector<double> S_full;
+    std::vector<double> U_full_row;
+    std::vector<double> VT_full_row;
     double tsvd0 = now_s();
-    int64_t info = lapack::gesdd(job, m, n, Acol.data(), m, S.data(), U.data(), m, VT.data(), k);
-    (void)info;
+    svd_jacobi_gpu_econ(Acol.data(), int(m), int(n), args.j_tol, args.j_sweeps, S_full, U_full_row, VT_full_row);
     tb.t_svd += now_s() - tsvd0;
     i64 chi = std::min<i64>(k, Dmax);
     std::vector<double> Uc(static_cast<size_t>(m) * static_cast<size_t>(chi));
@@ -237,17 +295,17 @@ static TammTB two_site_update_tamm_lapack(i64 D, i64 Dmax, const std::string& ga
     for(i64 i = 0; i < m; i++) {
         for(i64 j = 0; j < chi; j++) {
             Uc[static_cast<size_t>(i) * static_cast<size_t>(chi) + static_cast<size_t>(j)] =
-                U[static_cast<size_t>(i) * static_cast<size_t>(k) + static_cast<size_t>(j)];
+                U_full_row[static_cast<size_t>(i) * static_cast<size_t>(k) + static_cast<size_t>(j)];
         }
     }
     for(i64 i = 0; i < chi; i++) {
         for(i64 j = 0; j < n; j++) {
             VTc[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)] =
-                VT[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
+                VT_full_row[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j)];
         }
     }
     std::vector<double> Sx(static_cast<size_t>(chi));
-    for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S[static_cast<size_t>(i)];
+    for(i64 i = 0; i < chi; i++) Sx[static_cast<size_t>(i)] = S_full[static_cast<size_t>(i)];
     tb.t_truncate += now_s() - ttr0;
     tamm::TiledIndexSpace chi_tis{tamm::IndexSpace{tamm::range(chi)}, static_cast<tamm::Tile>(chi)};
     auto s = chi_tis.label("all");
@@ -272,7 +330,6 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     using namespace itensor;
     ITensorTB tb;
     double t0 = now_s();
-
     Index l(int(D), "l");
     Index bb(int(D), "b");
     Index rr(int(D), "r");
@@ -280,15 +337,11 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
     Index p2(2, "p2");
     Index q1(2, "q1");
     Index q2(2, "q2");
-
     ITensor A(l, p1, bb);
     ITensor B(bb, p2, rr);
-
     double tbuild0 = now_s();
-
     A = randomITensor(l, p1, bb);
     B = randomITensor(bb, p2, rr);
-
     ITensor G(p1, p2, q1, q2);
     double G16[16];
     make_gate<double>(gate_kind, G16);
@@ -298,30 +351,21 @@ static ITensorTB two_site_update_itensor(i64 D, i64 Dmax, const std::string& gat
             for(int c = 1; c <= 2; ++c)
                 for(int d = 1; d <= 2; ++d)
                     G.set(p1=a, p2=b2, q1=c, q2=d, G16[idx++]);
-
     tb.t_build += now_s() - tbuild0;
-
     double tc1 = now_s();
     ITensor Th = A * B;
     tb.t_contract_ab += now_s() - tc1;
-
     double tg = now_s();
     ITensor Th2 = Th * G;
     tb.t_apply_gate += now_s() - tg;
-
     double tsvd = now_s();
-    auto [U, S, V] = svd(Th2,
-                         IndexSet(l, q1),
-                         IndexSet(q2, rr),
-                         itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
+    auto [U, S, V] = svd(Th2, IndexSet(l, q1), IndexSet(q2, rr), itensor::Args("Cutoff", 0.0, "MaxDim", int(Dmax), "SVDMethod", "gesdd"));
     tb.t_svd += now_s() - tsvd;
-
     double trc = now_s();
     ITensor SV = S * V;
     volatile double sink = norm(SV);
     (void)sink;
     tb.t_reconstruct += now_s() - trc;
-
     tb.t_total += now_s() - t0;
     return tb;
 }
@@ -334,7 +378,10 @@ static void print_input_and_global(const Args& args, int rank, int world_size, d
                   << " gates " << args.gates
                   << " gate " << args.gate
                   << " seed " << args.seed
-                  << " tilesz " << args.tilesz << std::endl;
+                  << " tilesz " << args.tilesz
+                  << " j_tol " << args.j_tol
+                  << " j_sweeps " << args.j_sweeps
+                  << std::endl;
         std::cout << "time_total " << std::fixed << std::setprecision(6) << total_max_time << " s" << std::endl;
     }
 }
@@ -342,7 +389,7 @@ static void print_input_and_global(const Args& args, int rank, int world_size, d
 static void print_rank_breakdown_tamm(int rank, const TammTB& tb, long long tasks) {
     std::cout << "rank " << rank
               << " tasks " << tasks
-              << " TAMM+GESDD total " << std::fixed << std::setprecision(6) << tb.t_total
+              << " TAMM+cuSOLVER total " << std::fixed << std::setprecision(6) << tb.t_total
               << "s allocate " << tb.t_allocate
               << "s fill_random " << tb.t_fill_random
               << "s gate_fill " << tb.t_gate_fill
@@ -385,7 +432,7 @@ int main(int argc, char** argv) {
     while(true) {
         long long idx = ac.fetch_add(0, 1);
         if(idx >= args.gates) break;
-        TammTB tb1 = two_site_update_tamm_lapack(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg);
+        TammTB tb1 = two_site_update_tamm_cusolver(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx), self_pg, args);
         ITensorTB tb2 = two_site_update_itensor(args.bond_dim, args.max_bond_dim, args.gate, args.seed + static_cast<unsigned long long>(idx));
         acc_tamm.t_allocate += tb1.t_allocate;
         acc_tamm.t_fill_random += tb1.t_fill_random;
